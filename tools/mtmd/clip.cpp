@@ -952,6 +952,10 @@ static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32
             {
                 builder = std::make_unique<clip_graph_yasa2>(ctx, img);
             } break;
+        case PROJECTOR_TYPE_GRANITE4V:
+            {
+                builder = std::make_unique<clip_graph_granite4v>(ctx, img);
+            } break;
         default:
             GGML_ABORT("missing cgraph builder");
     }
@@ -1483,6 +1487,56 @@ struct clip_model_loader {
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         hparams.set_limit_image_tokens(256, 16384);
                         hparams.set_warmup_n_tokens(32*32);
+                    } break;
+                case PROJECTOR_TYPE_GRANITE4V:
+                    {
+                        // SigLIP tower.  All preprocessor details (pinpoints,
+                        // image_newline, projector geometry) live under g4v.
+                        hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
+                        hparams.image_resize_pad = true;
+
+                        auto & g4v = model.g4v;
+
+                        int32_t pcount = 0;
+                        get_u32(KEY_G4V_PROJECTOR_COUNT, pcount, true);
+                        g4v.projector_count = pcount;
+
+                        get_arr_int(KEY_G4V_PROJECTOR_VISION_LAYERS, g4v.projector_vision_layers, true);
+                        get_arr_int(KEY_G4V_PROJECTOR_LLM_LAYERS,    g4v.projector_llm_layers,    true);
+
+                        std::vector<int> is_spatial_i;
+                        get_arr_int(KEY_G4V_PROJECTOR_IS_SPATIAL, is_spatial_i, true);
+                        g4v.projector_is_spatial.assign(is_spatial_i.begin(), is_spatial_i.end());
+
+                        get_arr_int(KEY_G4V_PROJECTOR_SPATIAL_OFFSET, g4v.projector_spatial_offset, true);
+
+                        get_u32(KEY_G4V_DOWNSAMPLE_QUERY_SIDE,  g4v.downsample_query_side,  true);
+                        get_u32(KEY_G4V_DOWNSAMPLE_WINDOW_SIDE, g4v.downsample_window_side, true);
+                        get_u32(KEY_G4V_PROJECTOR_HIDDEN_SIZE,  g4v.projector_hidden_size,  true);
+                        get_u32(KEY_G4V_PROJECTOR_FFN_SIZE,     g4v.projector_ffn_size,     true);
+                        get_u32(KEY_G4V_PROJECTOR_ATTN_HEADS,   g4v.projector_attn_heads,   true);
+
+                        bool use_nl = true;
+                        get_bool(KEY_G4V_USE_IMAGE_NEWLINE, use_nl, false);
+                        g4v.use_image_newline = use_nl;
+
+                        get_string(KEY_G4V_VISION_FEATURE_SELECT, g4v.vision_feature_select, false);
+
+                        std::vector<int> pp_flat;
+                        get_arr_int(KEY_G4V_IMAGE_GRID_PINPOINTS, pp_flat, true);
+                        GGML_ASSERT(pp_flat.size() % 2 == 0 && "pinpoints must be flat (h,w) pairs");
+                        g4v.image_grid_pinpoints.clear();
+                        for (size_t i = 0; i + 1 < pp_flat.size(); i += 2) {
+                            g4v.image_grid_pinpoints.emplace_back(pp_flat[i], pp_flat[i + 1]);
+                        }
+
+                        // Mirror pinpoints into hparams.image_res_candidates for the
+                        // generic anyres driver.
+                        hparams.image_res_candidates.clear();
+                        for (auto & [h, w] : g4v.image_grid_pinpoints) {
+                            hparams.image_res_candidates.push_back(clip_image_size{w, h});
+                        }
+                        hparams.warmup_image_size = hparams.image_size;
                     } break;
                 case PROJECTOR_TYPE_LFM2A:
                     {
@@ -2248,6 +2302,57 @@ struct clip_model_loader {
                     model.mm_img_end        = get_tensor(TN_TOK_IMG_END);
                     model.image_newline     = get_tensor(TN_IMAGE_NEWLINE);
                     model.view_seperator    = get_tensor(TN_IMAGE_SEPERATOR, false);
+                } break;
+            case PROJECTOR_TYPE_GRANITE4V:
+                {
+                    // image_newline lives at the top-level.
+                    if (model.g4v.use_image_newline) {
+                        model.image_newline = get_tensor(TN_IMAGE_NEWLINE);
+                    }
+
+                    // 8 projector blocks, each with 34 tensors.
+                    model.g4v.blocks.resize(model.g4v.projector_count);
+                    for (int32_t bid = 0; bid < model.g4v.projector_count; ++bid) {
+                        auto & b = model.g4v.blocks[bid];
+
+                        b.norm_w           = get_tensor(string_format(TN_G4V_PROJ_NORM,        bid, "weight"));
+                        b.norm_b           = get_tensor(string_format(TN_G4V_PROJ_NORM,        bid, "bias"));
+                        b.query            = get_tensor(string_format("%s", string_format(TN_G4V_PROJ_QUERY, bid).c_str()));
+                        b.image_positions  = get_tensor(string_format("%s", string_format(TN_G4V_PROJ_IMG_POS, bid).c_str()));
+                        b.post_norm_w      = get_tensor(string_format(TN_G4V_PROJ_POST_NORM,   bid, "weight"));
+                        b.post_norm_b      = get_tensor(string_format(TN_G4V_PROJ_POST_NORM,   bid, "bias"));
+                        b.out_linear_w     = get_tensor(string_format(TN_G4V_PROJ_OUT_LINEAR,  bid, "weight"));
+                        b.out_linear_b     = get_tensor(string_format(TN_G4V_PROJ_OUT_LINEAR,  bid, "bias"));
+
+                        b.sa_q_w = get_tensor(string_format(TN_G4V_PROJ_SA_Q, bid, "weight"));
+                        b.sa_q_b = get_tensor(string_format(TN_G4V_PROJ_SA_Q, bid, "bias"));
+                        b.sa_k_w = get_tensor(string_format(TN_G4V_PROJ_SA_K, bid, "weight"));
+                        b.sa_k_b = get_tensor(string_format(TN_G4V_PROJ_SA_K, bid, "bias"));
+                        b.sa_v_w = get_tensor(string_format(TN_G4V_PROJ_SA_V, bid, "weight"));
+                        b.sa_v_b = get_tensor(string_format(TN_G4V_PROJ_SA_V, bid, "bias"));
+                        b.sa_out_w    = get_tensor(string_format(TN_G4V_PROJ_SA_OUT,      bid, "weight"));
+                        b.sa_out_b    = get_tensor(string_format(TN_G4V_PROJ_SA_OUT,      bid, "bias"));
+                        b.sa_out_ln_w = get_tensor(string_format(TN_G4V_PROJ_SA_OUT_NORM, bid, "weight"));
+                        b.sa_out_ln_b = get_tensor(string_format(TN_G4V_PROJ_SA_OUT_NORM, bid, "bias"));
+
+                        b.ca_q_w = get_tensor(string_format(TN_G4V_PROJ_CA_Q, bid, "weight"));
+                        b.ca_q_b = get_tensor(string_format(TN_G4V_PROJ_CA_Q, bid, "bias"));
+                        b.ca_k_w = get_tensor(string_format(TN_G4V_PROJ_CA_K, bid, "weight"));
+                        b.ca_k_b = get_tensor(string_format(TN_G4V_PROJ_CA_K, bid, "bias"));
+                        b.ca_v_w = get_tensor(string_format(TN_G4V_PROJ_CA_V, bid, "weight"));
+                        b.ca_v_b = get_tensor(string_format(TN_G4V_PROJ_CA_V, bid, "bias"));
+                        b.ca_out_w    = get_tensor(string_format(TN_G4V_PROJ_CA_OUT,      bid, "weight"));
+                        b.ca_out_b    = get_tensor(string_format(TN_G4V_PROJ_CA_OUT,      bid, "bias"));
+                        b.ca_out_ln_w = get_tensor(string_format(TN_G4V_PROJ_CA_OUT_NORM, bid, "weight"));
+                        b.ca_out_ln_b = get_tensor(string_format(TN_G4V_PROJ_CA_OUT_NORM, bid, "bias"));
+
+                        b.ffn_up_w   = get_tensor(string_format(TN_G4V_PROJ_FFN_UP,   bid, "weight"));
+                        b.ffn_up_b   = get_tensor(string_format(TN_G4V_PROJ_FFN_UP,   bid, "bias"));
+                        b.ffn_down_w = get_tensor(string_format(TN_G4V_PROJ_FFN_DOWN, bid, "weight"));
+                        b.ffn_down_b = get_tensor(string_format(TN_G4V_PROJ_FFN_DOWN, bid, "bias"));
+                        b.ffn_ln_w   = get_tensor(string_format(TN_G4V_PROJ_FFN_NORM, bid, "weight"));
+                        b.ffn_ln_b   = get_tensor(string_format(TN_G4V_PROJ_FFN_NORM, bid, "bias"));
+                    }
                 } break;
             case PROJECTOR_TYPE_JANUS_PRO:
                 {
