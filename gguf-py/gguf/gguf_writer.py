@@ -955,6 +955,9 @@ class GGUFWriter:
     def add_num_deepstack_layers(self, count: int) -> None:
         self.add_uint32(Keys.LLM.NUM_DEEPSTACK_LAYERS.format(arch=self.arch), count)
 
+    def add_deepstack_target_layers(self, layers: Sequence[int]) -> None:
+        self.add_array(Keys.LLM.DEEPSTACK_TARGET_LAYERS.format(arch=self.arch), layers)
+
     def add_rope_dimension_count(self, count: int) -> None:
         self.add_uint32(Keys.Rope.DIMENSION_COUNT.format(arch=self.arch), count)
 
@@ -1221,6 +1224,47 @@ class GGUFWriter:
 
     def add_vision_window_size(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.WINDOW_SIZE, value)
+
+    # granite vision 4.1 WindowQFormer projector metadata
+    def add_vision_g4v_projector_count(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_PROJECTOR_COUNT, value)
+
+    def add_vision_g4v_projector_vision_layers(self, layers: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.G4V_PROJECTOR_VISION_LAYERS, layers)
+
+    def add_vision_g4v_projector_llm_layers(self, layers: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.G4V_PROJECTOR_LLM_LAYERS, layers)
+
+    def add_vision_g4v_projector_is_spatial(self, flags: Sequence[bool]) -> None:
+        self.add_array(Keys.ClipVision.G4V_PROJECTOR_IS_SPATIAL, flags)
+
+    def add_vision_g4v_projector_spatial_offset(self, offsets: Sequence[int]) -> None:
+        self.add_array(Keys.ClipVision.G4V_PROJECTOR_SPATIAL_OFFSET, offsets)
+
+    def add_vision_g4v_downsample_query_side(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_DOWNSAMPLE_QUERY_SIDE, value)
+
+    def add_vision_g4v_downsample_window_side(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_DOWNSAMPLE_WINDOW_SIDE, value)
+
+    def add_vision_g4v_projector_hidden_size(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_PROJECTOR_HIDDEN_SIZE, value)
+
+    def add_vision_g4v_projector_ffn_size(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_PROJECTOR_FFN_SIZE, value)
+
+    def add_vision_g4v_projector_attn_heads(self, value: int) -> None:
+        self.add_uint32(Keys.ClipVision.G4V_PROJECTOR_ATTN_HEADS, value)
+
+    def add_vision_g4v_vision_feature_select(self, value: str) -> None:
+        self.add_string(Keys.ClipVision.G4V_VISION_FEATURE_SELECT, value)
+
+    def add_vision_g4v_image_grid_pinpoints(self, pinpoints_flat: Sequence[int]) -> None:
+        # Flat [h0,w0,h1,w1,...]
+        self.add_array(Keys.ClipVision.G4V_IMAGE_GRID_PINPOINTS, pinpoints_flat)
+
+    def add_vision_g4v_use_image_newline(self, value: bool) -> None:
+        self.add_bool(Keys.ClipVision.G4V_USE_IMAGE_NEWLINE, value)
 
     def add_vision_sam_layers_count(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.SAM.BLOCK_COUNT, value)

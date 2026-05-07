@@ -128,6 +128,7 @@ class Keys:
         MOE_LATENT_SIZE                   = "{arch}.moe_latent_size"
         NEXTN_PREDICT_LAYERS              = "{arch}.nextn_predict_layers"
         NUM_DEEPSTACK_LAYERS              = "{arch}.n_deepstack_layers"
+        DEEPSTACK_TARGET_LAYERS           = "{arch}.deepstack_target_layers" # granite vision 4.1 (optional)
         POOLING_TYPE                      = "{arch}.pooling_type"
         LOGIT_SCALE                       = "{arch}.logit_scale"
         DECODER_START_TOKEN_ID            = "{arch}.decoder_start_token_id"
@@ -319,6 +320,20 @@ class Keys:
         WA_LAYER_INDEXES    = "clip.vision.wa_layer_indexes" # used by youtuvl
         IS_DEEPSTACK_LAYERS = "clip.vision.is_deepstack_layers"
         WINDOW_SIZE         = "clip.vision.window_size"
+        # granite vision 4.1
+        G4V_PROJECTOR_COUNT           = "clip.vision.granite4.projector_count"
+        G4V_PROJECTOR_VISION_LAYERS   = "clip.vision.granite4.projector_vision_layers"
+        G4V_PROJECTOR_LLM_LAYERS      = "clip.vision.granite4.projector_llm_layers"
+        G4V_PROJECTOR_IS_SPATIAL      = "clip.vision.granite4.projector_is_spatial"
+        G4V_PROJECTOR_SPATIAL_OFFSET  = "clip.vision.granite4.projector_spatial_offset"
+        G4V_DOWNSAMPLE_QUERY_SIDE     = "clip.vision.granite4.downsample_query_side"
+        G4V_DOWNSAMPLE_WINDOW_SIDE    = "clip.vision.granite4.downsample_window_side"
+        G4V_PROJECTOR_HIDDEN_SIZE     = "clip.vision.granite4.projector_hidden_size"
+        G4V_PROJECTOR_FFN_SIZE        = "clip.vision.granite4.projector_ffn_size"
+        G4V_PROJECTOR_ATTN_HEADS      = "clip.vision.granite4.projector_attn_heads"
+        G4V_VISION_FEATURE_SELECT     = "clip.vision.granite4.vision_feature_select"
+        G4V_IMAGE_GRID_PINPOINTS      = "clip.vision.granite4.image_grid_pinpoints"
+        G4V_USE_IMAGE_NEWLINE         = "clip.vision.granite4.use_image_newline"
 
         class Attention:
             HEAD_COUNT      = "clip.vision.attention.head_count"
@@ -790,8 +805,28 @@ class MODEL_TENSOR(IntEnum):
     V_SAM_NECK           = auto() # Deepseek-OCR
     V_SAM_NET_2          = auto() # Deepseek-OCR
     V_SAM_NET_3          = auto() # Deepseek-OCR
-    V_ENC_EMBD_IMGNL     = auto() # Deepseek-OCR
+    V_ENC_EMBD_IMGNL     = auto() # Deepseek-OCR, Granite Vision 4.1
     V_ENC_EMBD_VSEP      = auto() # Deepseek-OCR
+    # granite vision 4.1 WindowQFormer downsampler projectors (shared by layerwise + spatial).
+    # Indexed by projector block id (0..n_projectors-1).
+    V_PROJ_QF_NORM            = auto() # granite4 vision: top-level LN on encoder input
+    V_PROJ_QF_QUERY           = auto() # granite4 vision: learnable query tensor
+    V_PROJ_QF_IMG_POS         = auto() # granite4 vision: image positional bias added to encoder keys/values
+    V_PROJ_QF_POST_NORM       = auto() # granite4 vision: qformer.layernorm
+    V_PROJ_QF_OUT_LINEAR      = auto() # granite4 vision: out_linear from vision_hidden -> llm_hidden
+    V_PROJ_QF_SA_Q            = auto() # qformer self-attention query
+    V_PROJ_QF_SA_K            = auto() # qformer self-attention key
+    V_PROJ_QF_SA_V            = auto() # qformer self-attention value
+    V_PROJ_QF_SA_OUT          = auto() # qformer self-attention output dense
+    V_PROJ_QF_SA_OUT_NORM     = auto() # qformer self-attention output layernorm
+    V_PROJ_QF_CA_Q            = auto() # qformer cross-attention query
+    V_PROJ_QF_CA_K            = auto() # qformer cross-attention key
+    V_PROJ_QF_CA_V            = auto() # qformer cross-attention value
+    V_PROJ_QF_CA_OUT          = auto() # qformer cross-attention output dense
+    V_PROJ_QF_CA_OUT_NORM     = auto() # qformer cross-attention output layernorm
+    V_PROJ_QF_FFN_UP          = auto() # qformer intermediate_query.dense
+    V_PROJ_QF_FFN_DOWN        = auto() # qformer output_query.dense
+    V_PROJ_QF_FFN_NORM        = auto() # qformer output_query.LayerNorm
 
     # audio (mtmd)
     A_ENC_EMBD_POS        = auto()
@@ -1276,7 +1311,26 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.V_SAM_NECK:                "v.sam.neck.{bid}",
     MODEL_TENSOR.V_SAM_NET_2:               "v.sam.net_2",
     MODEL_TENSOR.V_SAM_NET_3:               "v.sam.net_3",
-    MODEL_TENSOR.V_ENC_EMBD_IMGNL:          "v.image_newline", # Deepseek-OCR
+    MODEL_TENSOR.V_ENC_EMBD_IMGNL:          "v.image_newline", # Deepseek-OCR, Granite Vision 4.1
+    # granite vision 4.1 projector block {bid} tensors
+    MODEL_TENSOR.V_PROJ_QF_NORM:            "mm.proj.{bid}.norm",
+    MODEL_TENSOR.V_PROJ_QF_QUERY:           "mm.proj.{bid}.query",
+    MODEL_TENSOR.V_PROJ_QF_IMG_POS:         "mm.proj.{bid}.image_positions",
+    MODEL_TENSOR.V_PROJ_QF_POST_NORM:       "mm.proj.{bid}.qformer.layernorm",
+    MODEL_TENSOR.V_PROJ_QF_OUT_LINEAR:      "mm.proj.{bid}.out_linear",
+    MODEL_TENSOR.V_PROJ_QF_SA_Q:            "mm.proj.{bid}.qformer.sa.q",
+    MODEL_TENSOR.V_PROJ_QF_SA_K:            "mm.proj.{bid}.qformer.sa.k",
+    MODEL_TENSOR.V_PROJ_QF_SA_V:            "mm.proj.{bid}.qformer.sa.v",
+    MODEL_TENSOR.V_PROJ_QF_SA_OUT:          "mm.proj.{bid}.qformer.sa.out",
+    MODEL_TENSOR.V_PROJ_QF_SA_OUT_NORM:     "mm.proj.{bid}.qformer.sa.out_norm",
+    MODEL_TENSOR.V_PROJ_QF_CA_Q:            "mm.proj.{bid}.qformer.ca.q",
+    MODEL_TENSOR.V_PROJ_QF_CA_K:            "mm.proj.{bid}.qformer.ca.k",
+    MODEL_TENSOR.V_PROJ_QF_CA_V:            "mm.proj.{bid}.qformer.ca.v",
+    MODEL_TENSOR.V_PROJ_QF_CA_OUT:          "mm.proj.{bid}.qformer.ca.out",
+    MODEL_TENSOR.V_PROJ_QF_CA_OUT_NORM:     "mm.proj.{bid}.qformer.ca.out_norm",
+    MODEL_TENSOR.V_PROJ_QF_FFN_UP:          "mm.proj.{bid}.qformer.ffn_up",
+    MODEL_TENSOR.V_PROJ_QF_FFN_DOWN:        "mm.proj.{bid}.qformer.ffn_down",
+    MODEL_TENSOR.V_PROJ_QF_FFN_NORM:        "mm.proj.{bid}.qformer.ffn_norm",
     MODEL_TENSOR.V_ENC_EMBD_VSEP:           "v.view_seperator", # Deepseek-OCR
     # audio (mtmd)
     # note: all audio tensor names must use prefix "a." or "mm.a."
@@ -1403,6 +1457,25 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.V_DS_NORM,
         MODEL_TENSOR.V_DS_FC1,
         MODEL_TENSOR.V_DS_FC2,
+        # granite vision 4.1 QFormer projector tensors
+        MODEL_TENSOR.V_PROJ_QF_NORM,
+        MODEL_TENSOR.V_PROJ_QF_QUERY,
+        MODEL_TENSOR.V_PROJ_QF_IMG_POS,
+        MODEL_TENSOR.V_PROJ_QF_POST_NORM,
+        MODEL_TENSOR.V_PROJ_QF_OUT_LINEAR,
+        MODEL_TENSOR.V_PROJ_QF_SA_Q,
+        MODEL_TENSOR.V_PROJ_QF_SA_K,
+        MODEL_TENSOR.V_PROJ_QF_SA_V,
+        MODEL_TENSOR.V_PROJ_QF_SA_OUT,
+        MODEL_TENSOR.V_PROJ_QF_SA_OUT_NORM,
+        MODEL_TENSOR.V_PROJ_QF_CA_Q,
+        MODEL_TENSOR.V_PROJ_QF_CA_K,
+        MODEL_TENSOR.V_PROJ_QF_CA_V,
+        MODEL_TENSOR.V_PROJ_QF_CA_OUT,
+        MODEL_TENSOR.V_PROJ_QF_CA_OUT_NORM,
+        MODEL_TENSOR.V_PROJ_QF_FFN_UP,
+        MODEL_TENSOR.V_PROJ_QF_FFN_DOWN,
+        MODEL_TENSOR.V_PROJ_QF_FFN_NORM,
         MODEL_TENSOR.V_MM_POST_FC_NORM,
         MODEL_TENSOR.V_MM_UP,
         MODEL_TENSOR.V_MM_DOWN,
@@ -4158,6 +4231,7 @@ class VisionProjectorType:
     NEMOTRON_V2_VL = "nemotron_v2_vl"
     HUNYUANOCR     = "hunyuanocr"
     HUNYUANVL      = "hunyuanvl"
+    GRANITE4V      = "granite4v" # granite vision 4.1
 
 
 # Items here are (block size, type size)

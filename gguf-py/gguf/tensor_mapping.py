@@ -1424,8 +1424,68 @@ class TensorNameMap:
         ),
 
         MODEL_TENSOR.V_ENC_EMBD_IMGNL: (
-            "model.image_newline",  # Deepseek-OCR
+            "model.image_newline",  # Deepseek-OCR, Granite Vision 4.1
             "vit.perceive.image_newline", # HunyuanOCR
+        ),
+
+        # Granite Vision 4.1 WindowQFormer projector tensors.
+        # The converter rewrites the HF names to fit the {bid} slot by assigning
+        # 0..3 to layerwise_projectors and 4..7 to spatial_projectors, so the
+        # HF-side names listed here use a placeholder "{prefix}.{bid}" where
+        # the converter has already normalized the two prefixes to a single index.
+        MODEL_TENSOR.V_PROJ_QF_NORM: (
+            "model.granite4_projector.{bid}.norm", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_QUERY: (
+            "model.granite4_projector.{bid}.query", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_IMG_POS: (
+            "model.granite4_projector.{bid}.image_positions", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_POST_NORM: (
+            "model.granite4_projector.{bid}.qformer.layernorm", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_OUT_LINEAR: (
+            "model.granite4_projector.{bid}.out_linear", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_SA_Q: (
+            "model.granite4_projector.{bid}.qformer.attention.query", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_SA_K: (
+            "model.granite4_projector.{bid}.qformer.attention.key", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_SA_V: (
+            "model.granite4_projector.{bid}.qformer.attention.value", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_SA_OUT: (
+            "model.granite4_projector.{bid}.qformer.attention.output.dense", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_SA_OUT_NORM: (
+            "model.granite4_projector.{bid}.qformer.attention.output.LayerNorm", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_CA_Q: (
+            "model.granite4_projector.{bid}.qformer.crossattention.query", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_CA_K: (
+            "model.granite4_projector.{bid}.qformer.crossattention.key", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_CA_V: (
+            "model.granite4_projector.{bid}.qformer.crossattention.value", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_CA_OUT: (
+            "model.granite4_projector.{bid}.qformer.crossattention.output.dense", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_CA_OUT_NORM: (
+            "model.granite4_projector.{bid}.qformer.crossattention.output.LayerNorm", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_FFN_UP: (
+            "model.granite4_projector.{bid}.qformer.intermediate_query.dense", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_FFN_DOWN: (
+            "model.granite4_projector.{bid}.qformer.output_query.dense", # granite vision 4.1 (normalized)
+        ),
+        MODEL_TENSOR.V_PROJ_QF_FFN_NORM: (
+            "model.granite4_projector.{bid}.qformer.output_query.LayerNorm", # granite vision 4.1 (normalized)
         ),
 
         MODEL_TENSOR.V_ENC_EMBD_VSEP: (
