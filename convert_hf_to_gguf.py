@@ -3243,6 +3243,214 @@ class SmolVLMModel(MmprojModel):
         return super().filter_tensors(item)
 
 
+@ModelBase.register("Granite4VisionForConditionalGeneration")
+class Granite4VisionMmprojModel(MmprojModel):
+    """mmproj conversion for IBM Granite Vision 4.1.
+
+    The model uses a SigLIP vision tower plus an 8-block WindowQFormer
+    projector bank (4 layerwise + 4 spatial-offset).  Projector blocks are
+    re-indexed to a single flat id space: layerwise_projectors.N -> bid=N
+    (0..3) and spatial_projectors.N -> bid=4+N (4..7).  This lets the C++
+    clip graph address every block uniformly by {bid} and read per-block
+    attributes (vision layer, LLM layer, spatial offset) out of separate
+    arrays in the GGUF header.
+    """
+
+    _N_LAYERWISE = 4
+    _N_SPATIAL = 4
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert self.hparams_vision is not None, "vision_config missing"
+        # SigLIP vision tower parameters live under vision_config; MmprojModel
+        # already points self.hparams at that dict after __init__.
+
+    # ---- GGUF metadata ----
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+        g = self.global_config
+
+        self.gguf_writer.add_clip_projector_type(gguf.VisionProjectorType.GRANITE4V)
+
+        # SigLIP encoder hparams
+        self.gguf_writer.add_vision_attention_layernorm_eps(self.hparams.get("layer_norm_eps", 1e-6))
+        self.gguf_writer.add_vision_use_gelu(True)
+
+        # Preprocessor
+        self.gguf_writer.add_vision_preproc_image_size(self.hparams.get("image_size", 384))
+
+        # Projector geometry
+        deepstack_layer_map = [tuple(int(x) for x in p) for p in g["deepstack_layer_map"]]
+        spatial_target_layers = [int(x) for x in g.get("spatial_target_layers", [])]
+        use_spatial = bool(g.get("use_spatial_sampling", False))
+        spatial_vision_layer = int(g.get("spatial_vision_layer", -1))
+
+        # Flat projector block id space.
+        projector_vision_layers: list[int] = []
+        projector_llm_layers: list[int] = []
+        projector_is_spatial: list[bool] = []
+        projector_spatial_offset: list[int] = []
+
+        for vlayer, llayer in deepstack_layer_map:
+            projector_vision_layers.append(int(vlayer))
+            projector_llm_layers.append(int(llayer))
+            projector_is_spatial.append(False)
+            projector_spatial_offset.append(-1)
+
+        if use_spatial:
+            assert len(spatial_target_layers) == self._N_SPATIAL, \
+                f"expected {self._N_SPATIAL} spatial target layers, got {len(spatial_target_layers)}"
+            for off, llayer in enumerate(spatial_target_layers):
+                projector_vision_layers.append(spatial_vision_layer)
+                projector_llm_layers.append(int(llayer))
+                projector_is_spatial.append(True)
+                projector_spatial_offset.append(off)
+
+        self.gguf_writer.add_vision_g4v_projector_count(len(projector_vision_layers))
+        self.gguf_writer.add_vision_g4v_projector_vision_layers(projector_vision_layers)
+        self.gguf_writer.add_vision_g4v_projector_llm_layers(projector_llm_layers)
+        self.gguf_writer.add_vision_g4v_projector_is_spatial(projector_is_spatial)
+        self.gguf_writer.add_vision_g4v_projector_spatial_offset(projector_spatial_offset)
+
+        # Downsample rate "q/w" -> q = query side, w = window side.  The "4/8"
+        # rate means each 8x8 window of encoder patches produces 4x4 queries
+        # (half-resolution output in each axis).
+        q_str, w_str = g["downsample_rate"].split("/")
+        q_side, w_side = int(q_str), int(w_str)
+        self.gguf_writer.add_vision_g4v_downsample_query_side(q_side)
+        self.gguf_writer.add_vision_g4v_downsample_window_side(w_side)
+
+        # QFormer block config (Blip2QFormer hardcoded in downsampling.py)
+        # hidden_size = vision_hidden_size (1152), ffn = 3072, heads = hidden/64.
+        vhidden = int(self.hparams["hidden_size"])
+        self.gguf_writer.add_vision_g4v_projector_hidden_size(vhidden)
+        self.gguf_writer.add_vision_g4v_projector_ffn_size(3072)
+        self.gguf_writer.add_vision_g4v_projector_attn_heads(vhidden // 64)
+
+        self.gguf_writer.add_vision_g4v_vision_feature_select(
+            g.get("vision_feature_select_strategy", "full"))
+
+        pinpoints = g["image_grid_pinpoints"]
+        pinpoints_flat = [v for pair in pinpoints for v in pair]
+        self.gguf_writer.add_vision_g4v_image_grid_pinpoints(pinpoints_flat)
+
+        self.gguf_writer.add_vision_g4v_use_image_newline(
+            bool(g.get("use_image_newline_parameter", True)))
+
+    # ---- Tensor routing ----
+    @classmethod
+    def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:
+        name, gen = item
+        # Skip language-model tensors and the SigLIP attention-pooling head
+        # (not used by Granite4Vision's forward pass).
+        if name.startswith("model.language_model."):
+            return None
+        if name.startswith("model.vision_tower.vision_model.head."):
+            return None
+        if not (name.startswith("model.") or name == "lm_head.weight"):
+            return None
+        return super().filter_tensors(item)
+
+    # ---- Tensor rewriting ----
+    # Map an HF tensor name to the normalized form recognized by
+    # tensor_mapping.py's V_PROJ_QF_* entries, or to V_ENC_* for the SigLIP
+    # tower, or V_ENC_EMBD_IMGNL for the newline embedding.  Returns the
+    # rewritten name or None if the tensor should be skipped.
+    def _rewrite_name(self, name: str) -> str | None:
+        # image_newline — already mapped via V_ENC_EMBD_IMGNL (Deepseek-OCR entry).
+        if name == "model.image_newline":
+            return name
+
+        # SigLIP tower — strip just the outer "model." so existing SigLIP
+        # tensor_mapping entries ("vision_tower.vision_model.*") match.
+        if name.startswith("model.vision_tower."):
+            return name.removeprefix("model.")
+
+        # Layerwise / spatial projector -> normalized single-index form.
+        for prefix, bid_offset in (
+            ("model.layerwise_projectors.", 0),
+            ("model.spatial_projectors.", self._N_LAYERWISE),
+        ):
+            if name.startswith(prefix):
+                rest = name[len(prefix):]
+                idx_str, sub = rest.split(".", 1)
+                bid = bid_offset + int(idx_str)
+                return self._normalize_projector_subname(bid, sub)
+
+        return None
+
+    @staticmethod
+    def _normalize_projector_subname(bid: int, sub: str) -> str:
+        """
+        HF subname -> normalized "model.granite4_projector.{bid}.<subname>"
+        matching tensor_mapping entries.
+        """
+        base = f"model.granite4_projector.{bid}"
+
+        # Non-QFormer pieces
+        if sub.startswith("norm."):
+            return f"{base}.norm.{sub.split('.', 1)[1]}"
+        if sub == "query":
+            return f"{base}.query"
+        if sub == "image_positions":
+            return f"{base}.image_positions"
+        if sub.startswith("out_linear."):
+            return f"{base}.out_linear.{sub.split('.', 1)[1]}"
+
+        # QFormer pieces — the HF path is
+        #     qformer.encoder.layer.0.<section>.<component>.(weight|bias)
+        # or  qformer.layernorm.(weight|bias)
+        if sub == "qformer.layernorm.weight" or sub == "qformer.layernorm.bias":
+            return f"{base}.qformer.layernorm.{sub.rsplit('.', 1)[1]}"
+
+        if sub.startswith("qformer.encoder.layer.0."):
+            tail = sub.removeprefix("qformer.encoder.layer.0.")
+
+            # self-attention: attention.attention.<qkv>.w/b, attention.output.*
+            if tail.startswith("attention.attention."):
+                comp = tail.removeprefix("attention.attention.")
+                # comp is e.g. "query.weight"
+                role, suffix = comp.split(".", 1)
+                return f"{base}.qformer.attention.{role}.{suffix}"
+            if tail.startswith("attention.output.dense."):
+                suffix = tail.removeprefix("attention.output.dense.")
+                return f"{base}.qformer.attention.output.dense.{suffix}"
+            if tail.startswith("attention.output.LayerNorm."):
+                suffix = tail.removeprefix("attention.output.LayerNorm.")
+                return f"{base}.qformer.attention.output.LayerNorm.{suffix}"
+
+            # cross-attention
+            if tail.startswith("crossattention.attention."):
+                comp = tail.removeprefix("crossattention.attention.")
+                role, suffix = comp.split(".", 1)
+                return f"{base}.qformer.crossattention.{role}.{suffix}"
+            if tail.startswith("crossattention.output.dense."):
+                suffix = tail.removeprefix("crossattention.output.dense.")
+                return f"{base}.qformer.crossattention.output.dense.{suffix}"
+            if tail.startswith("crossattention.output.LayerNorm."):
+                suffix = tail.removeprefix("crossattention.output.LayerNorm.")
+                return f"{base}.qformer.crossattention.output.LayerNorm.{suffix}"
+
+            # FFN
+            if tail.startswith("intermediate_query.dense."):
+                suffix = tail.removeprefix("intermediate_query.dense.")
+                return f"{base}.qformer.intermediate_query.dense.{suffix}"
+            if tail.startswith("output_query.dense."):
+                suffix = tail.removeprefix("output_query.dense.")
+                return f"{base}.qformer.output_query.dense.{suffix}"
+            if tail.startswith("output_query.LayerNorm."):
+                suffix = tail.removeprefix("output_query.LayerNorm.")
+                return f"{base}.qformer.output_query.LayerNorm.{suffix}"
+
+        raise ValueError(f"Unhandled projector subname: {sub}")
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        rewritten = self._rewrite_name(name)
+        if rewritten is None:
+            return
+        yield from super().modify_tensors(data_torch, rewritten, bid)
+
+
 @ModelBase.register(
     "Llama4ForConditionalGeneration",
     "Llama4ForCausalLM",
