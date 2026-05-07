@@ -526,6 +526,59 @@ struct clip_model {
             || proj_type == PROJECTOR_TYPE_VOXTRAL
             || proj_type == PROJECTOR_TYPE_MERALION;
     }
+
+    // ---- Granite Vision 4.1 WindowQFormer projector bank ----
+    //
+    // Every block contains the same 18 tensors regardless of whether it is an
+    // "interpolate" block (layerwise deepstack) or a "spatial-offset" block;
+    // the dispatch happens at forward-time based on g4v.is_spatial[bid] and
+    // g4v.spatial_offset[bid].  See docs/multimodal/granite-vision-4.1.md.
+    struct g4v_projector_block {
+        // Top-level pieces
+        ggml_tensor * norm_w = nullptr;              // LayerNorm(vision_hidden)
+        ggml_tensor * norm_b = nullptr;
+        ggml_tensor * query = nullptr;               // (1, query_len, vision_hidden)
+        ggml_tensor * image_positions = nullptr;     // (1, window_len, vision_hidden)
+        ggml_tensor * post_norm_w = nullptr;         // qformer.layernorm (applied to out of qformer)
+        ggml_tensor * post_norm_b = nullptr;
+        ggml_tensor * out_linear_w = nullptr;        // (vision_hidden -> llm_hidden)
+        ggml_tensor * out_linear_b = nullptr;
+        // Self-attention
+        ggml_tensor * sa_q_w = nullptr;  ggml_tensor * sa_q_b = nullptr;
+        ggml_tensor * sa_k_w = nullptr;  ggml_tensor * sa_k_b = nullptr;
+        ggml_tensor * sa_v_w = nullptr;  ggml_tensor * sa_v_b = nullptr;
+        ggml_tensor * sa_out_w = nullptr; ggml_tensor * sa_out_b = nullptr;
+        ggml_tensor * sa_out_ln_w = nullptr; ggml_tensor * sa_out_ln_b = nullptr;
+        // Cross-attention
+        ggml_tensor * ca_q_w = nullptr;  ggml_tensor * ca_q_b = nullptr;
+        ggml_tensor * ca_k_w = nullptr;  ggml_tensor * ca_k_b = nullptr;
+        ggml_tensor * ca_v_w = nullptr;  ggml_tensor * ca_v_b = nullptr;
+        ggml_tensor * ca_out_w = nullptr; ggml_tensor * ca_out_b = nullptr;
+        ggml_tensor * ca_out_ln_w = nullptr; ggml_tensor * ca_out_ln_b = nullptr;
+        // FFN
+        ggml_tensor * ffn_up_w = nullptr;   ggml_tensor * ffn_up_b = nullptr;
+        ggml_tensor * ffn_down_w = nullptr; ggml_tensor * ffn_down_b = nullptr;
+        ggml_tensor * ffn_ln_w = nullptr;   ggml_tensor * ffn_ln_b = nullptr;
+    };
+    struct g4v_meta {
+        // Per-projector metadata arrays, all of length projector_count.
+        int32_t projector_count = 0;
+        std::vector<int32_t> projector_vision_layers; // where to pull vision features from
+        std::vector<int32_t> projector_llm_layers;    // where to inject into the LLM
+        std::vector<bool>    projector_is_spatial;    // true => use SpatialOffset, false => Interpolate
+        std::vector<int32_t> projector_spatial_offset; // 0..3 when is_spatial, else -1
+        // Shared hyperparams
+        int32_t downsample_query_side = 4;
+        int32_t downsample_window_side = 8;
+        int32_t projector_hidden_size = 1152; // qformer hidden == vision hidden
+        int32_t projector_ffn_size = 3072;
+        int32_t projector_attn_heads = 18;
+        bool    use_image_newline = true;
+        std::string vision_feature_select = "full";
+        std::vector<std::pair<int32_t,int32_t>> image_grid_pinpoints; // list of (h,w)
+        std::vector<g4v_projector_block> blocks; // size == projector_count
+    };
+    g4v_meta g4v;
 };
 
 const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx);

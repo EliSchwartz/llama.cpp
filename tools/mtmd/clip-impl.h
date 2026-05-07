@@ -59,6 +59,20 @@
 #define KEY_SAM_N_HEAD             "clip.vision.sam.head_count"
 #define KEY_SAM_N_BLOCK            "clip.vision.sam.block_count"
 #define KEY_SAM_N_EMBD             "clip.vision.sam.embedding_length"
+// granite vision 4.1 WindowQFormer projector metadata
+#define KEY_G4V_PROJECTOR_COUNT          "clip.vision.granite4.projector_count"
+#define KEY_G4V_PROJECTOR_VISION_LAYERS  "clip.vision.granite4.projector_vision_layers"
+#define KEY_G4V_PROJECTOR_LLM_LAYERS     "clip.vision.granite4.projector_llm_layers"
+#define KEY_G4V_PROJECTOR_IS_SPATIAL     "clip.vision.granite4.projector_is_spatial"
+#define KEY_G4V_PROJECTOR_SPATIAL_OFFSET "clip.vision.granite4.projector_spatial_offset"
+#define KEY_G4V_DOWNSAMPLE_QUERY_SIDE    "clip.vision.granite4.downsample_query_side"
+#define KEY_G4V_DOWNSAMPLE_WINDOW_SIDE   "clip.vision.granite4.downsample_window_side"
+#define KEY_G4V_PROJECTOR_HIDDEN_SIZE    "clip.vision.granite4.projector_hidden_size"
+#define KEY_G4V_PROJECTOR_FFN_SIZE       "clip.vision.granite4.projector_ffn_size"
+#define KEY_G4V_PROJECTOR_ATTN_HEADS     "clip.vision.granite4.projector_attn_heads"
+#define KEY_G4V_VISION_FEATURE_SELECT    "clip.vision.granite4.vision_feature_select"
+#define KEY_G4V_IMAGE_GRID_PINPOINTS     "clip.vision.granite4.image_grid_pinpoints"
+#define KEY_G4V_USE_IMAGE_NEWLINE        "clip.vision.granite4.use_image_newline"
 // audio-specific
 #define KEY_AUDIO_PROJ_TYPE     "clip.audio.projector_type" // for models with mixed modalities
 #define KEY_A_NUM_MEL_BINS      "clip.audio.num_mel_bins"
@@ -112,6 +126,26 @@
 #define TN_MM_PROJECTOR    "mm.model.fc.%s"             // idefics3, deepseekocr
 #define TN_MM_PATCH_MERGER "mm.patch_merger.%s"         // mistral small 3.1, glm4v
 #define TN_TOK_IMG_BREAK   "v.token_embd.img_break"     // pixtral
+
+// granite vision 4.1 WindowQFormer projector tensors (indexed by projector block id 0..N-1)
+#define TN_G4V_PROJ_NORM            "mm.proj.%d.norm.%s"
+#define TN_G4V_PROJ_QUERY           "mm.proj.%d.query"
+#define TN_G4V_PROJ_IMG_POS         "mm.proj.%d.image_positions"
+#define TN_G4V_PROJ_POST_NORM       "mm.proj.%d.qformer.layernorm.%s"
+#define TN_G4V_PROJ_OUT_LINEAR      "mm.proj.%d.out_linear.%s"
+#define TN_G4V_PROJ_SA_Q            "mm.proj.%d.qformer.sa.q.%s"
+#define TN_G4V_PROJ_SA_K            "mm.proj.%d.qformer.sa.k.%s"
+#define TN_G4V_PROJ_SA_V            "mm.proj.%d.qformer.sa.v.%s"
+#define TN_G4V_PROJ_SA_OUT          "mm.proj.%d.qformer.sa.out.%s"
+#define TN_G4V_PROJ_SA_OUT_NORM     "mm.proj.%d.qformer.sa.out_norm.%s"
+#define TN_G4V_PROJ_CA_Q            "mm.proj.%d.qformer.ca.q.%s"
+#define TN_G4V_PROJ_CA_K            "mm.proj.%d.qformer.ca.k.%s"
+#define TN_G4V_PROJ_CA_V            "mm.proj.%d.qformer.ca.v.%s"
+#define TN_G4V_PROJ_CA_OUT          "mm.proj.%d.qformer.ca.out.%s"
+#define TN_G4V_PROJ_CA_OUT_NORM     "mm.proj.%d.qformer.ca.out_norm.%s"
+#define TN_G4V_PROJ_FFN_UP          "mm.proj.%d.qformer.ffn_up.%s"
+#define TN_G4V_PROJ_FFN_DOWN        "mm.proj.%d.qformer.ffn_down.%s"
+#define TN_G4V_PROJ_FFN_NORM        "mm.proj.%d.qformer.ffn_norm.%s"
 #define TN_TOK_GLM_BOI     "adapter.boi"                // glm-edge (these embeddings are not in text model)
 #define TN_TOK_GLM_EOI     "adapter.eoi"                // glm-edge (these embeddings are not in text model)
 #define TN_DEEPSTACK_NORM  "v.deepstack.%d.norm.%s"     // qwen3vl deepstack
@@ -304,6 +338,7 @@ enum projector_type {
     PROJECTOR_TYPE_NEMOTRON_V2_VL,
     PROJECTOR_TYPE_HUNYUANOCR,
     PROJECTOR_TYPE_HUNYUANVL,
+    PROJECTOR_TYPE_GRANITE4V,
     PROJECTOR_TYPE_UNKNOWN,
 };
 
@@ -351,6 +386,7 @@ static std::map<projector_type, std::string> PROJECTOR_TYPE_NAMES = {
     { PROJECTOR_TYPE_NEMOTRON_V2_VL, "nemotron_v2_vl"},
     { PROJECTOR_TYPE_HUNYUANOCR, "hunyuanocr"},
     { PROJECTOR_TYPE_HUNYUANVL,  "hunyuanvl"},
+    { PROJECTOR_TYPE_GRANITE4V,  "granite4v"},
 };
 
 static projector_type clip_projector_type_from_string(const std::string & str) {
