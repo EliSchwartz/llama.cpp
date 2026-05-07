@@ -141,10 +141,12 @@ def dump_pack_and_unpad(model, out_dir: Path, cfg):
     ds_side = int(side * ds)  # 12
     llm_d = cfg.text_config.hidden_size
 
-    # Fake: 1 image, num_patches=3 (base + 2 tiles), each of shape (ds_side*ds_side, llm_d)
+    # Fake: 1 image, num_patches=3 (base + 2x1 tiles). Image size is exactly
+    # 2 tiles tall x 1 tile wide so the aspect matches (no unpad crop).
+    # Anyres grid shape: (num_patch_height=2, num_patch_width=1).
     num_patches = 3
     image_features = [torch.randn(num_patches, ds_side * ds_side, llm_d)]
-    image_sizes = torch.tensor([[600, 400]])  # (H, W)
+    image_sizes = torch.tensor([[2 * image_size, image_size]])  # (H, W) = (768, 384)
 
     with torch.no_grad():
         packed, feature_lens = model.model.pack_and_unpad_image_features(
@@ -191,12 +193,19 @@ def dump_pinpoints(processor, out_dir: Path):
 
 def dump_full_mmproj(model, out_dir: Path, cfg):
     """Run model.model.get_image_features on a canonical image; dump its output (list of streams)."""
+    from transformers.models.llava_next.modeling_llava_next import image_size_to_num_patches
     deterministic()
-    # Build pixel values with 1 image, 3 tiles (base + 2 splits).
-    # Use image_sizes to derive num_patches.
     image_size = cfg.vision_config.image_size
-    pixel_values = torch.randn(1, 3, 3, image_size, image_size)  # (B=1, num_patches=3, C, H, W)
-    image_sizes = torch.tensor([[600, 400]])
+    # Use a deterministic real image size for reproducibility; pick one that
+    # triggers anyres splitting (>1 tile).
+    target_size = (2 * image_size, image_size)  # (H, W) = (768, 384) → 3 patches total
+    num_patches = image_size_to_num_patches(
+        image_size=list(target_size),
+        grid_pinpoints=cfg.image_grid_pinpoints,
+        patch_size=image_size,
+    )
+    pixel_values = torch.randn(1, num_patches, 3, image_size, image_size)
+    image_sizes = torch.tensor([list(target_size)])
     save_npy(out_dir / "mmproj_pixel_values.npy", pixel_values)
     save_npy(out_dir / "mmproj_image_sizes.npy", image_sizes)
     with torch.no_grad():
