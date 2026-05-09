@@ -118,6 +118,87 @@ def dump_downsamplers(model, hidden_states: torch.Tensor, out_dir: Path, cfg):
             save_npy(out_dir / f"downsampler_spatial_{i}_out.npy", y)
 
 
+def dump_downsampler_substeps(model, hidden_states: torch.Tensor, out_dir: Path, cfg):
+    """
+    Dump the intermediate tensors of a single interp and a single spatial
+    WindowQFormerDownsampler block (block indices 0 and 0 respectively) so
+    the C++ port can validate each sub-step independently instead of
+    bisecting a >20-op forward from in/out alone.
+
+    For each block we save (all as float32 .npy, B=1, no dropout):
+      <prefix>_norm.npy          LayerNorm(hidden_states)
+      <prefix>_enc.npy           _win(normed, 24, 8)   -> (9, 64, 1152)
+      <prefix>_downsampled.npy   downsampler(normed)   -> (1, 144, 1152)
+      <prefix>_query_embeds.npy  query + _win(downsampled, 12, 4)  -> (9, 16, 1152)
+      <prefix>_encoder_embeds.npy enc + image_positions            -> (9, 64, 1152)
+      <prefix>_qformer_out.npy   qformer(q=query, enc=encoder).last_hidden_state -> (9, 16, 1152)
+      <prefix>_unwin.npy         _unwin(qformer_out)   -> (1, 144, 1152)
+      <prefix>_out.npy           out_linear(unwin)     -> (1, 144, 2560)
+
+    The _out file is redundant with downsampler_{interp,spatial}_0_out.npy
+    but is produced here from the captured intermediates to confirm the
+    chain matches end-to-end.
+    """
+    def run_one(block, x, prefix):
+        # Recreate the forward step-by-step while stashing intermediates.
+        x = x.clone()
+        # Top-level norm
+        normed = block.norm(x)
+        save_npy(out_dir / f"{prefix}_norm.npy", normed)
+
+        side = block.image_side
+        win  = block.window_side
+        qside = block.query_side
+        n = side // win
+        new_side = n * qside
+
+        enc = block._win(normed, side, win)
+        save_npy(out_dir / f"{prefix}_enc.npy", enc)
+
+        downsampled = block.downsampler(normed)
+        save_npy(out_dir / f"{prefix}_downsampled.npy", downsampled)
+
+        downsampled_w = block._win(downsampled, new_side, qside)
+        query_embeds = block.query + downsampled_w
+        save_npy(out_dir / f"{prefix}_query_embeds.npy", query_embeds)
+
+        encoder_embeds = enc + block.image_positions
+        # Skip dropout (block.dropout) because eval() is set but we still
+        # want the exact sum to land in the fixture.
+        save_npy(out_dir / f"{prefix}_encoder_embeds.npy", encoder_embeds)
+
+        out_w = block.qformer(
+            query_embeds=query_embeds,
+            encoder_hidden_states=encoder_embeds,
+            return_dict=True,
+        ).last_hidden_state
+        save_npy(out_dir / f"{prefix}_qformer_out.npy", out_w)
+
+        unwinned = block._unwin(out_w, n=n, win=qside)
+        save_npy(out_dir / f"{prefix}_unwin.npy", unwinned)
+
+        final = block.out_linear(unwinned)
+        save_npy(out_dir / f"{prefix}_out.npy", final)
+
+    # Block 0 (interp)
+    interp_block = model.model.layerwise_projectors[0]
+    vlayer = cfg.deepstack_layer_map[0][0]
+    x = hidden_states[vlayer]
+    if cfg.vision_feature_select_strategy == "default":
+        x = x[:, 1:]
+    with torch.no_grad():
+        run_one(interp_block, x, "block_interp0")
+
+    # Block 0 of spatial group (if enabled)
+    if cfg.use_spatial_sampling:
+        spat_block = model.model.spatial_projectors[0]
+        x = hidden_states[cfg.spatial_vision_layer]
+        if cfg.vision_feature_select_strategy == "default":
+            x = x[:, 1:]
+        with torch.no_grad():
+            run_one(spat_block, x, "block_spatial0")
+
+
 def dump_image_newline(model, out_dir: Path):
     save_npy(out_dir / "image_newline.npy", model.model.image_newline.data)
 
@@ -277,17 +358,20 @@ def main():
     model, processor, cfg = load_model(args.model_dir)
 
     groups = args.only or ["meta", "image_newline", "siglip", "downsamplers",
-                            "pack", "pinpoints", "mmproj"]
+                            "downsampler_substeps", "pack", "pinpoints", "mmproj"]
 
     if "meta" in groups:
         dump_meta(cfg, out_dir)
     if "image_newline" in groups:
         dump_image_newline(model, out_dir)
     hs = pv = None
-    if "siglip" in groups or "downsamplers" in groups:
+    needs_hs = any(g in groups for g in ("siglip", "downsamplers", "downsampler_substeps"))
+    if needs_hs:
         hs, pv = dump_siglip(model, out_dir)
     if "downsamplers" in groups:
         dump_downsamplers(model, hs, out_dir, cfg)
+    if "downsampler_substeps" in groups:
+        dump_downsampler_substeps(model, hs, out_dir, cfg)
     if "pack" in groups:
         dump_pack_and_unpad(model, out_dir, cfg)
     if "pinpoints" in groups:
