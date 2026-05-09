@@ -121,3 +121,8 @@ add_executable(llama-mtmd-debug debug/mtmd-debug.cpp)
 set_target_properties(llama-mtmd-debug PROPERTIES OUTPUT_NAME llama-mtmd-debug)
 target_link_libraries(llama-mtmd-debug PRIVATE llama-common mtmd Threads::Threads)
 target_compile_features(llama-mtmd-debug PRIVATE cxx_std_17)
+
+# Granite Vision 4.1 fixture harness (local development tool; not installed).
+add_executable(test-granite-vision-4_1 tests/granite-vision-4.1/test_clip.cpp)
+target_link_libraries(test-granite-vision-4_1 PRIVATE mtmd ggml Threads::Threads)
+target_compile_features(test-granite-vision-4_1 PRIVATE cxx_std_17)

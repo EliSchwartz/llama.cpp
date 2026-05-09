@@ -3956,6 +3956,13 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
             return ctx->model.hparams.projection_dim;
         case PROJECTOR_TYPE_GLM4V:
             return ctx->model.mm_ffn_down_w->ne[1];
+        case PROJECTOR_TYPE_GRANITE4V:
+            // Per-token dim of a single projector output (D_llm).  The full
+            // mmproj output is (1 + g4v.projector_count) * projection_dim,
+            // concatenated along the feature dim with the base stream first.
+            // TODO: revisit once the deepstack generalization lands (see
+            // docs/multimodal/granite-vision-4.1.md §"Next steps").
+            return ctx->model.hparams.projection_dim;
         default:
             GGML_ABORT("Unknown projector type");
     }
