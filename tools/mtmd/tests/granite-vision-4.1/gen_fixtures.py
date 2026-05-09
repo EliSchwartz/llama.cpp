@@ -180,23 +180,24 @@ def dump_downsampler_substeps(model, hidden_states: torch.Tensor, out_dir: Path,
         final = block.out_linear(unwinned)
         save_npy(out_dir / f"{prefix}_out.npy", final)
 
-    # Block 0 (interp)
-    interp_block = model.model.layerwise_projectors[0]
-    vlayer = cfg.deepstack_layer_map[0][0]
-    x = hidden_states[vlayer]
-    if cfg.vision_feature_select_strategy == "default":
-        x = x[:, 1:]
-    with torch.no_grad():
-        run_one(interp_block, x, "block_interp0")
-
-    # Block 0 of spatial group (if enabled)
-    if cfg.use_spatial_sampling:
-        spat_block = model.model.spatial_projectors[0]
-        x = hidden_states[cfg.spatial_vision_layer]
+    # All interp blocks
+    for i, (vlayer, _) in enumerate(cfg.deepstack_layer_map):
+        interp_block = model.model.layerwise_projectors[i]
+        x = hidden_states[vlayer]
         if cfg.vision_feature_select_strategy == "default":
             x = x[:, 1:]
         with torch.no_grad():
-            run_one(spat_block, x, "block_spatial0")
+            run_one(interp_block, x, f"block_interp{i}")
+
+    # All spatial blocks (if enabled)
+    if cfg.use_spatial_sampling:
+        for i in range(4):
+            spat_block = model.model.spatial_projectors[i]
+            x = hidden_states[cfg.spatial_vision_layer]
+            if cfg.vision_feature_select_strategy == "default":
+                x = x[:, 1:]
+            with torch.no_grad():
+                run_one(spat_block, x, f"block_spatial{i}")
 
 
 def dump_image_newline(model, out_dir: Path):

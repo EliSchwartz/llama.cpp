@@ -2767,11 +2767,38 @@ struct clip_model_loader {
             }
             return;
         }
-        int n = gguf_get_arr_n(ctx_gguf.get(), i);
+        const int n = gguf_get_arr_n(ctx_gguf.get(), i);
         output.resize(n);
-        const int32_t * values = (const int32_t *)gguf_get_arr_data(ctx_gguf.get(), i);
-        for (int i = 0; i < n; ++i) {
-            output[i] = values[i];
+        const enum gguf_type t = gguf_get_arr_type(ctx_gguf.get(), i);
+        const void * raw = gguf_get_arr_data(ctx_gguf.get(), i);
+        switch (t) {
+            case GGUF_TYPE_BOOL: {
+                const int8_t * v = (const int8_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j] ? 1 : 0;
+            } break;
+            case GGUF_TYPE_INT8: {
+                const int8_t * v = (const int8_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j];
+            } break;
+            case GGUF_TYPE_UINT8: {
+                const uint8_t * v = (const uint8_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j];
+            } break;
+            case GGUF_TYPE_INT16: {
+                const int16_t * v = (const int16_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j];
+            } break;
+            case GGUF_TYPE_UINT16: {
+                const uint16_t * v = (const uint16_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j];
+            } break;
+            case GGUF_TYPE_INT32:
+            case GGUF_TYPE_UINT32:
+            default: {
+                // Best-effort: assume 32-bit int for unknown array types (prior behaviour).
+                const int32_t * v = (const int32_t *) raw;
+                for (int j = 0; j < n; ++j) output[j] = v[j];
+            } break;
         }
     }
 
@@ -3726,7 +3753,15 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 auto upload = [&](const std::string & name, const std::vector<int32_t> & idx) {
                     ggml_tensor * t = ggml_graph_get_tensor(gf, name.c_str());
                     if (t) {
+                        if (std::getenv("G4V_DEBUG_NAMES")) {
+                            std::fprintf(stderr, "granite4v: upload %s len=%zu first=%d\n",
+                                         name.c_str(), idx.size(),
+                                         idx.empty() ? -1 : idx.front());
+                        }
                         ggml_backend_tensor_set(t, idx.data(), 0, idx.size() * sizeof(int32_t));
+                    } else if (std::getenv("G4V_DEBUG_NAMES")) {
+                        std::fprintf(stderr, "granite4v: index tensor %s not found in graph\n",
+                                     name.c_str());
                     }
                 };
 

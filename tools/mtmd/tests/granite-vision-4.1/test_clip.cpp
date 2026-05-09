@@ -103,15 +103,16 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
     //   i = 0        -> post patch-embed + pos (pre-encoder), ggml name "pos_embed"
     //   i = 1..27    -> output of transformer layer i-1,      ggml name "layer_out-<i-1>"
     //
-    // During stage 1b only block 0's forward is present, so only the
-    // SigLIP layers up through vision_layer = hidden_states[9] = layer_out-8
-    // are reachable from the graph output; later SigLIP layers are pruned
-    // by ggml_build_forward_expand.
+    // All 8 blocks pull from layers -19/-13/-7/-1 (interp) and -1 (spatial),
+    // so with stage 1c the full 27-layer stack is reachable.  Sample a
+    // handful of layers to catch divergence anywhere in the tower.
     std::vector<checkpoint> checkpoints = {
         {"pos_embed",    "siglip_hidden_states_layer_0.npy"},
         {"layer_out-0",  "siglip_hidden_states_layer_1.npy"},
-        {"layer_out-6",  "siglip_hidden_states_layer_7.npy"},
-        {"layer_out-8",  "siglip_hidden_states_layer_9.npy"},   // block 0's vision input
+        {"layer_out-8",  "siglip_hidden_states_layer_9.npy"},   // bid 0 vision_layer
+        {"layer_out-14", "siglip_hidden_states_layer_15.npy"},  // bid 1 vision_layer
+        {"layer_out-20", "siglip_hidden_states_layer_21.npy"},  // bid 2 vision_layer
+        {"layer_out-26", "siglip_hidden_states_layer_27.npy"},  // bid 3/spatial vision_layer
     };
 
     // The fixture is a single (28, 1, 576, 1152) file.  Rather than pre-slice
@@ -148,10 +149,15 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
     for (const auto & cp : checkpoints) {
         h.wanted.emplace(cp.name, cp.fixture);
     }
-    // Block sub-step checkpoints (see block_checks below).  These must be
-    // registered in h.wanted BEFORE clip_encode_float_image runs, otherwise
-    // cb_eval returns false during graph compute and the tensors never get
-    // observed.
+    // Block sub-step checkpoints.  These must be registered in h.wanted
+    // BEFORE clip_encode_float_image runs, otherwise cb_eval returns false
+    // during graph compute and the tensors never get observed.
+    //
+    // Block 0 (interp) gets full per-sub-step coverage; blocks 1-7 only
+    // check the final "out" fixture, which implicitly covers everything
+    // upstream of it.  Add more sub-step fixtures to block 4 (first
+    // spatial) if spatial-specific debugging is ever needed — the existing
+    // block_spatial0_*.npy fixtures are already on disk.
     struct block_check { const char * name; const char * fixture; };
     const std::vector<block_check> block_checks = {
         {"g4v_blk0_norm",           "block_interp0_norm.npy"},
@@ -162,6 +168,20 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
         {"g4v_blk0_qformer_out",    "block_interp0_qformer_out.npy"},
         {"g4v_blk0_unwin",          "block_interp0_unwin.npy"},
         {"g4v_blk0_out",            "block_interp0_out.npy"},
+        // Block 1 sub-steps to isolate the divergence in the failing blocks.
+        {"g4v_blk1_norm",           "block_interp1_norm.npy"},
+        {"g4v_blk1_enc",            "block_interp1_enc.npy"},
+        {"g4v_blk1_downsampled",    "block_interp1_downsampled.npy"},
+        {"g4v_blk1_query_embeds",   "block_interp1_query_embeds.npy"},
+        {"g4v_blk1_qformer_out",    "block_interp1_qformer_out.npy"},
+        // Per-block final outputs; bid 0..3 = interp, bid 4..7 = spatial.
+        {"g4v_blk1_out",            "downsampler_interp_1_out.npy"},
+        {"g4v_blk2_out",            "downsampler_interp_2_out.npy"},
+        {"g4v_blk3_out",            "downsampler_interp_3_out.npy"},
+        {"g4v_blk4_out",            "downsampler_spatial_0_out.npy"},
+        {"g4v_blk5_out",            "downsampler_spatial_1_out.npy"},
+        {"g4v_blk6_out",            "downsampler_spatial_2_out.npy"},
+        {"g4v_blk7_out",            "downsampler_spatial_3_out.npy"},
     };
     for (const auto & bc : block_checks) {
         h.wanted.emplace(bc.name, bc.fixture);

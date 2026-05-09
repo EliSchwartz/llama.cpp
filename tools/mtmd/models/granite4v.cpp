@@ -372,33 +372,40 @@ ggml_cgraph * clip_graph_granite4v::build() {
         inpL = cur;
     }
 
-    // --- Stage 1b: single WindowQFormer block (bid = 0) on its vision layer. ---
+    // --- Stage 1c: all 8 WindowQFormer blocks. ---
+    // Each block pulls from its own SigLIP vision layer (stored as a
+    // negative HF index in projector_vision_layers) and produces a
+    // (D_llm, query_side^2 * n^2) output stream.  The outputs are tagged
+    // g4v_blk<bid>_out via cbx; the harness diffs each against the
+    // corresponding downsampler_{interp,spatial}_<i>_out.npy fixture.
     const auto & g4v = model.g4v;
-    const int bid = 0;
-    const auto & blk = g4v.blocks[bid];
+    const float qformer_eps = 1e-12f;  // Blip2QFormerConfig default
 
-    // deepstack_layer_map[0] = [-19, 9] → vision_layer = -19 → hidden_states[9]
-    //   = output of block 8 (0-indexed) = layer_outs[8].
-    int vlayer = g4v.projector_vision_layers[bid];
-    if (vlayer < 0) vlayer = (n_layer + 1) + vlayer;  // HF negative-indexing against L+1 states
-    // In our storage, layer_outs[il] = hidden_states[il+1].  So we need
-    // layer_outs[vlayer - 1] (no layer_outs for hidden_states[0]; bid=0 uses 9 → layer_outs[8]).
-    GGML_ASSERT(vlayer >= 1 && vlayer <= n_layer);
-    ggml_tensor * h = layer_outs[vlayer - 1];
+    ggml_tensor * last_out = nullptr;
+    for (int bid = 0; bid < g4v.projector_count; ++bid) {
+        const auto & blk = g4v.blocks[bid];
 
-    // QFormer LayerNorm eps = 1e-12 per Blip2QFormerConfig default.
-    const float qformer_eps = 1e-12f;
+        int vlayer = g4v.projector_vision_layers[bid];
+        if (vlayer < 0) vlayer = (n_layer + 1) + vlayer;  // HF negative-indexing
+        GGML_ASSERT(vlayer >= 1 && vlayer <= n_layer);
+        ggml_tensor * h = layer_outs[vlayer - 1];
 
-    ggml_tensor * out = g4v_build_block(
-        this, ctx0, gf, blk,
-        h, bid,
-        g4v.projector_is_spatial[bid],
-        g4v.projector_spatial_offset[bid],
-        /* image_side  */ n_patches_x,
-        /* window_side */ g4v.downsample_window_side,
-        /* query_side  */ g4v.downsample_query_side,
-        qformer_eps);
+        ggml_tensor * stream = g4v_build_block(
+            this, ctx0, gf, blk,
+            h, bid,
+            g4v.projector_is_spatial[bid],
+            g4v.projector_spatial_offset[bid],
+            /* image_side  */ n_patches_x,
+            /* window_side */ g4v.downsample_window_side,
+            /* query_side  */ g4v.downsample_query_side,
+            qformer_eps);
+        ggml_build_forward_expand(gf, stream);
+        last_out = stream;
+    }
 
-    ggml_build_forward_expand(gf, out);
+    // Terminal node: the last block's output.  All streams are still
+    // scheduled via forward_expand above; clip.cpp's post-compute shape
+    // check looks at gf->nodes[-1], which is last_out's tag node.
+    GGML_ASSERT(last_out != nullptr);
     return gf;
 }
