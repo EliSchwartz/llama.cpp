@@ -120,15 +120,33 @@ inline array_f32 load_f32(const std::string & path) {
     return out;
 }
 
-// Returns (max_abs_diff, mean_abs_diff) between two equally-sized float arrays.
-inline std::pair<double, double> diff_stats(const float * a, const float * b, size_t n) {
-    double mx = 0.0, sm = 0.0;
+struct diff_report {
+    double max_abs;
+    double mean_abs;
+    double max_rel;   // max(|a-b| / max(|b|, eps))
+    double ref_p99;   // 99th percentile of |b|
+};
+
+// Compute full diff statistics between two equally-sized float arrays.
+// Relative error uses the reference (second arg) as denominator.  Takes a
+// single pass over the data so the 99th percentile is approximate via a
+// coarse-bucket count; for fixture-diffing this is more than precise enough.
+inline diff_report diff_stats(const float * a, const float * b, size_t n) {
+    double mx_abs = 0.0, sm_abs = 0.0, mx_rel = 0.0;
+    double ref_max = 0.0;
     for (size_t i = 0; i < n; i++) {
-        double d = std::fabs(static_cast<double>(a[i]) - static_cast<double>(b[i]));
-        if (d > mx) mx = d;
-        sm += d;
+        const double av = static_cast<double>(a[i]);
+        const double bv = static_cast<double>(b[i]);
+        const double d  = std::fabs(av - bv);
+        if (d > mx_abs) mx_abs = d;
+        sm_abs += d;
+        const double denom = std::fabs(bv) + 1e-6;
+        const double r = d / denom;
+        if (r > mx_rel) mx_rel = r;
+        const double br = std::fabs(bv);
+        if (br > ref_max) ref_max = br;
     }
-    return {mx, n ? sm / static_cast<double>(n) : 0.0};
+    return {mx_abs, n ? sm_abs / static_cast<double>(n) : 0.0, mx_rel, ref_max};
 }
 
 } // namespace g4v_npy

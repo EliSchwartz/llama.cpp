@@ -3210,6 +3210,14 @@ int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 * im
                 }
                 n_patches = n;
             } break;
+        case PROJECTOR_TYPE_GRANITE4V:
+            {
+                // DEV: encoder-only stage reports the raw patch grid.  The
+                // real value will be driven by pinpoint selection and the
+                // pack_and_unpad output (e.g. 145 for 1 tile, 456 for 3
+                // tiles) once stages 1b/1c land.
+                // n_patches already equals (img->nx / patch_size)^2.
+            } break;
         default:
             GGML_ABORT("unsupported projector type");
     }
@@ -3651,6 +3659,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         case PROJECTOR_TYPE_COGVLM:
         case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_YASA2:
+        case PROJECTOR_TYPE_GRANITE4V:
             {
                 // do nothing
             } break;
@@ -3957,12 +3966,14 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_GLM4V:
             return ctx->model.mm_ffn_down_w->ne[1];
         case PROJECTOR_TYPE_GRANITE4V:
-            // Per-token dim of a single projector output (D_llm).  The full
-            // mmproj output is (1 + g4v.projector_count) * projection_dim,
-            // concatenated along the feature dim with the base stream first.
-            // TODO: revisit once the deepstack generalization lands (see
-            // docs/multimodal/granite-vision-4.1.md §"Next steps").
-            return ctx->model.hparams.projection_dim;
+            // DEV: until the WindowQFormer projector bank is implemented
+            // (see docs/multimodal/granite-vision-4.1.md stages 1b/1c),
+            // the graph returns the raw SigLIP hidden state of shape
+            // (n_embd, n_patches) = (1152, 576), so clip_n_output_tokens
+            // and clip_n_mmproj_embd must report the encoder's dims.
+            // Final values will be projection_dim (per stream) multiplied
+            // by (1 + g4v.projector_count), concatenated along feature dim.
+            return ctx->model.hparams.n_embd;
         default:
             GGML_ABORT("Unknown projector type");
     }
