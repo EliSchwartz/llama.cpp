@@ -56,6 +56,12 @@ bool eval_cb(ggml_tensor * t, bool ask, void * /*user_data*/) {
     const char * raw_name = ggml_get_name(t);
     if (!raw_name || raw_name[0] == '\0') return false;
 
+    // Debug: dump every name the scheduler offers us, plus whether it's
+    // ask/observe.  Enable with G4V_DEBUG_NAMES=1.
+    if (std::getenv("G4V_DEBUG_NAMES")) {
+        std::fprintf(stderr, "cb_eval %s: %s\n", ask ? "ask " : "obs ", raw_name);
+    }
+
     auto it = g_harness->wanted.find(raw_name);
     if (it == g_harness->wanted.end()) return false;
 
@@ -97,15 +103,15 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
     //   i = 0        -> post patch-embed + pos (pre-encoder), ggml name "pos_embed"
     //   i = 1..27    -> output of transformer layer i-1,      ggml name "layer_out-<i-1>"
     //
-    // We exercise a sparse set — enough to catch divergence early without
-    // spamming stdout.  Fill in more as debugging demands it.
+    // During stage 1b only block 0's forward is present, so only the
+    // SigLIP layers up through vision_layer = hidden_states[9] = layer_out-8
+    // are reachable from the graph output; later SigLIP layers are pruned
+    // by ggml_build_forward_expand.
     std::vector<checkpoint> checkpoints = {
-        {"pos_embed",    "siglip_hidden_states_layer_0.npy"},   // optional, see below
+        {"pos_embed",    "siglip_hidden_states_layer_0.npy"},
         {"layer_out-0",  "siglip_hidden_states_layer_1.npy"},
         {"layer_out-6",  "siglip_hidden_states_layer_7.npy"},
-        {"layer_out-12", "siglip_hidden_states_layer_13.npy"},
-        {"layer_out-18", "siglip_hidden_states_layer_19.npy"},
-        {"layer_out-26", "siglip_hidden_states_layer_27.npy"},  // final layer
+        {"layer_out-8",  "siglip_hidden_states_layer_9.npy"},   // block 0's vision input
     };
 
     // The fixture is a single (28, 1, 576, 1152) file.  Rather than pre-slice
@@ -141,6 +147,24 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
     harness h;
     for (const auto & cp : checkpoints) {
         h.wanted.emplace(cp.name, cp.fixture);
+    }
+    // Block sub-step checkpoints (see block_checks below).  These must be
+    // registered in h.wanted BEFORE clip_encode_float_image runs, otherwise
+    // cb_eval returns false during graph compute and the tensors never get
+    // observed.
+    struct block_check { const char * name; const char * fixture; };
+    const std::vector<block_check> block_checks = {
+        {"g4v_blk0_norm",           "block_interp0_norm.npy"},
+        {"g4v_blk0_enc",            "block_interp0_enc.npy"},
+        {"g4v_blk0_downsampled",    "block_interp0_downsampled.npy"},
+        {"g4v_blk0_query_embeds",   "block_interp0_query_embeds.npy"},
+        {"g4v_blk0_encoder_embeds", "block_interp0_encoder_embeds.npy"},
+        {"g4v_blk0_qformer_out",    "block_interp0_qformer_out.npy"},
+        {"g4v_blk0_unwin",          "block_interp0_unwin.npy"},
+        {"g4v_blk0_out",            "block_interp0_out.npy"},
+    };
+    for (const auto & bc : block_checks) {
+        h.wanted.emplace(bc.name, bc.fixture);
     }
     g_harness = &h;
 
@@ -178,7 +202,7 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
     for (const auto & cp : checkpoints) {
         auto it = h.captured.find(cp.name);
         if (it == h.captured.end()) {
-            std::fprintf(stdout, "  [MISS] %-18s : tensor never flowed through cb_eval\n", cp.name.c_str());
+            std::fprintf(stdout, "  [MISS] %-26s : tensor never flowed through cb_eval\n", cp.name.c_str());
             failed++;
             continue;
         }
@@ -192,13 +216,13 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
             layer = std::atoi(cp.name.c_str() + std::strlen("layer_out-")) + 1;
         }
         if (layer < 0 || layer >= hs.shape[0]) {
-            std::fprintf(stdout, "  [SKIP] %-18s : no fixture mapping\n", cp.name.c_str());
+            std::fprintf(stdout, "  [SKIP] %-26s : no fixture mapping\n", cp.name.c_str());
             continue;
         }
         const float * expected = hs.data.data() + layer * layer_stride;
         const std::vector<float> & got = it->second;
         if (static_cast<int64_t>(got.size()) != layer_stride) {
-            std::fprintf(stdout, "  [SIZE] %-18s : got %zu floats, expected %lld\n",
+            std::fprintf(stdout, "  [SIZE] %-26s : got %zu floats, expected %lld\n",
                          cp.name.c_str(), got.size(), static_cast<long long>(layer_stride));
             failed++;
             continue;
@@ -216,8 +240,46 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
             : rep.max_abs;
         const bool pass = rel_to_ref_max <= 5e-4 && rep.mean_abs <= 5e-3;
         std::fprintf(stdout,
-                     "  [%s] %-18s : max_abs=%.4g  mean_abs=%.4g  max_abs/ref_max=%.4g  ref_max=%.4g\n",
+                     "  [%s] %-26s : max_abs=%.4g  mean_abs=%.4g  max_abs/ref_max=%.4g  ref_max=%.4g\n",
                      pass ? " OK " : "FAIL", cp.name.c_str(),
+                     rep.max_abs, rep.mean_abs, rel_to_ref_max, rep.ref_p99);
+        if (!pass) failed++;
+    }
+
+    // Block sub-step diffs.  Each checks the captured tensor against a
+    // dedicated .npy fixture file.  Tolerance rationale matches above:
+    // ggml CPU has ~1e-3 relative FFN/gelu noise from the FP16 lookup,
+    // amplified modestly by the QFormer FFN.
+    for (const auto & bc : block_checks) {
+        auto it = h.captured.find(bc.name);
+        if (it == h.captured.end()) {
+            std::fprintf(stdout, "  [MISS] %-26s : tensor never flowed through cb_eval\n", bc.name);
+            failed++;
+            continue;
+        }
+        g4v_npy::array_f32 expect;
+        try {
+            expect = g4v_npy::load_f32(fixtures_dir + "/" + bc.fixture);
+        } catch (const std::exception & e) {
+            std::fprintf(stdout, "  [FAIL] %-26s : %s\n", bc.name, e.what());
+            failed++;
+            continue;
+        }
+        const std::vector<float> & got = it->second;
+        if (got.size() != static_cast<size_t>(expect.numel())) {
+            std::fprintf(stdout, "  [SIZE] %-26s : got %zu floats, expected %lld\n",
+                         bc.name, got.size(), (long long) expect.numel());
+            failed++;
+            continue;
+        }
+        auto rep = g4v_npy::diff_stats(got.data(), expect.data.data(), got.size());
+        const double rel_to_ref_max = rep.ref_p99 > 0
+            ? rep.max_abs / rep.ref_p99
+            : rep.max_abs;
+        const bool pass = rel_to_ref_max <= 5e-3 && rep.mean_abs <= 5e-3;
+        std::fprintf(stdout,
+                     "  [%s] %-26s : max_abs=%.4g  mean_abs=%.4g  max_abs/ref_max=%.4g  ref_max=%.4g\n",
+                     pass ? " OK " : "FAIL", bc.name,
                      rep.max_abs, rep.mean_abs, rel_to_ref_max, rep.ref_p99);
         if (!pass) failed++;
     }
