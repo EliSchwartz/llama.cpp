@@ -574,6 +574,15 @@ struct clip_model {
         int32_t projector_ffn_size = 3072;
         int32_t projector_attn_heads = 18;
         bool    use_image_newline = true;
+        // Multiplier applied to the base stream (stream targeting the lowest
+        // llm_layer) before concatenation into the mmproj output.  Needed
+        // because the shared Granite LLM graph scales t_inp_embd by
+        // f_embedding_scale (12.0) for ALL positions, while Granite Vision
+        // 4.1's HF forward zeroes inputs_embeds at image positions BEFORE
+        // the multiplier -- so the base stream has to enter the LLM graph
+        // pre-divided.  Defaults to 1.0 if the mmproj was produced before
+        // this KV was added.
+        float   base_stream_scale = 1.0f;
         std::string vision_feature_select = "full";
         std::vector<std::pair<int32_t,int32_t>> image_grid_pinpoints; // list of (h,w)
         std::vector<g4v_projector_block> blocks; // size == projector_count

@@ -434,9 +434,19 @@ ggml_cgraph * clip_graph_granite4v::build() {
 
     // Concatenate streams along the feature dim (ne[0]).  Each stream has
     // shape (projection_dim, 144).  Result: (K * projection_dim, 144).
+    //
+    // The first stream (smallest llm_layer) enters the Granite LLM graph
+    // as the text-embedding slot and gets multiplied by
+    // f_embedding_scale there.  HF Granite Vision 4.1 consumes this
+    // stream unscaled (it zero-fills image-position inputs_embeds before
+    // the multiplier), so we pre-divide it here by g4v.base_stream_scale
+    // (= 1/f_embedding_scale, written by the converter).
     ggml_tensor * mmproj = nullptr;
     for (int k = 0; k < g4v.projector_count; ++k) {
         ggml_tensor * s = streams[order[k]];
+        if (k == 0 && g4v.base_stream_scale != 1.0f) {
+            s = ggml_scale(ctx0, s, g4v.base_stream_scale);
+        }
         mmproj = (k == 0) ? s : ggml_concat(ctx0, mmproj, s, /*dim=*/0);
     }
     ggml_set_name(mmproj, "g4v_mmproj_packed");
@@ -444,25 +454,30 @@ ggml_cgraph * clip_graph_granite4v::build() {
     // Append the learned image_newline vector as one extra token along the
     // token dim (ne[1]).  image_newline has shape (projection_dim,) and is
     // replicated across all K stream slices.
-    const int n_tokens_base = static_cast<int>(streams[0]->ne[1]);
-    const int n_streams     = g4v.projector_count;
+    //
+    // The base slice (offset 0 in the packed layout) receives the same
+    // pre-scale compensation as the base stream itself, so after the LLM
+    // graph multiplies by f_embedding_scale the image_newline row of the
+    // base slice is restored to its learned value.  The remaining K-1
+    // deepstack slices are consumed unscaled so they carry the full
+    // image_newline value in the output.
     ggml_tensor * newline_token;
     {
-        // Tile image_newline K times along ne[0] to build one (K*D, 1)
-        // token, then concat along ne[1].  ggml_repeat expands the tensor
-        // to a target shape; we use an explicit new tensor of the target
-        // shape to drive it.
         GGML_ASSERT(model.image_newline != nullptr);
-        ggml_tensor * newline = model.image_newline;         // (D,)
-        newline = ggml_reshape_2d(ctx0, newline, projection_dim, 1);  // (D, 1)
-        ggml_tensor * target = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32,
-                                                  n_streams * projection_dim, 1);
-        newline_token = ggml_repeat(ctx0, newline, target);  // (K*D, 1)
+        ggml_tensor * newline = ggml_reshape_2d(ctx0, model.image_newline, projection_dim, 1); // (D, 1)
+        ggml_tensor * newline_scaled = (g4v.base_stream_scale != 1.0f)
+            ? ggml_scale(ctx0, newline, g4v.base_stream_scale)
+            : newline;
+
+        // Stack K copies along ne[0].  Build the base slice first (scaled),
+        // then concat K-1 unscaled copies.
+        newline_token = newline_scaled;
+        for (int k = 1; k < g4v.projector_count; ++k) {
+            newline_token = ggml_concat(ctx0, newline_token, newline, /*dim=*/0);
+        }
     }
     mmproj = ggml_concat(ctx0, mmproj, newline_token, /*dim=*/1);
     ggml_set_name(mmproj, "g4v_mmproj_out");
-
-    (void) n_tokens_base;  // referenced only for readability above
 
     ggml_build_forward_expand(gf, mmproj);
     return gf;

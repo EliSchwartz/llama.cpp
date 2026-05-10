@@ -1520,6 +1520,10 @@ struct clip_model_loader {
                         get_bool(KEY_G4V_USE_IMAGE_NEWLINE, use_nl, false);
                         g4v.use_image_newline = use_nl;
 
+                        float base_scale = 1.0f;
+                        get_f32(KEY_G4V_BASE_STREAM_SCALE, base_scale, false);
+                        g4v.base_stream_scale = base_scale;
+
                         get_string(KEY_G4V_VISION_FEATURE_SELECT, g4v.vision_feature_select, false);
 
                         std::vector<int> pp_flat;

@@ -485,16 +485,20 @@ struct mtmd_context {
                 } break;
             case PROJECTOR_TYPE_GRANITE4V:
                 {
-                    // Granite Vision 4.1 uses a single "<image>" token to mark
-                    // image positions; see modeling.py::get_image_token_mask.
-                    // image_grid_pinpoints is written into hparams by the
-                    // mmproj loader, so llava_uhd's pinpoint branch does the
-                    // LlavaNext-style multi-tile split.  Single-tile requests
-                    // (original <= 384x384) bypass the slicing and hit the
-                    // no-slice branch of get_slice_instructions.
+                    // Granite Vision 4.1 uses a single "<image>" token to
+                    // mark image positions; see modeling.py::get_image_token_mask.
+                    //
+                    // MVP: single-tile only -- resize the input image to
+                    // image_size x image_size and feed one tile through the
+                    // clip graph, which emits (8 * projection_dim, 145) with
+                    // the stage-2a pack_and_unpad already baked in.  The
+                    // LlavaNext-style multi-tile path (pinpoints +
+                    // pack_and_unpad across tiles) is not yet wired through
+                    // mtmd_encode; calling clip_image_batch_encode with
+                    // n_tiles > 1 hits an assertion inside clip.cpp.
                     img_beg = "<image>";
                     img_end = "";
-                    image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
                 } break;
             default:
                 throw std::runtime_error(string_format("%s: unexpected vision projector type %d\n", __func__, proj));

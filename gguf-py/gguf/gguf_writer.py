@@ -1266,6 +1266,9 @@ class GGUFWriter:
     def add_vision_g4v_use_image_newline(self, value: bool) -> None:
         self.add_bool(Keys.ClipVision.G4V_USE_IMAGE_NEWLINE, value)
 
+    def add_vision_g4v_base_stream_scale(self, value: float) -> None:
+        self.add_float32(Keys.ClipVision.G4V_BASE_STREAM_SCALE, float(value))
+
     def add_vision_sam_layers_count(self, value: int) -> None:
         self.add_uint32(Keys.ClipVision.SAM.BLOCK_COUNT, value)
 

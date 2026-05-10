@@ -3337,6 +3337,18 @@ class Granite4VisionMmprojModel(MmprojModel):
         self.gguf_writer.add_vision_g4v_use_image_newline(
             bool(g.get("use_image_newline_parameter", True)))
 
+        # Text-side compensation: the shared Granite LLM graph scales the
+        # input embedding by text_config.embedding_multiplier (12.0).
+        # Granite Vision 4.1's HF forward zeroes inputs_embeds at image
+        # positions BEFORE the multiplier, so the base stream is consumed
+        # unscaled.  To let the shared graph scale it and still end up
+        # with the right value, the mmproj pre-divides the base stream
+        # (offset 0 in the deepstack layout) by the same multiplier.
+        # A scalar compensation KV lets the mmproj graph pull the exact
+        # value without touching the text gguf.
+        emb_mul = float(g.get("text_config", {}).get("embedding_multiplier", 1.0))
+        self.gguf_writer.add_vision_g4v_base_stream_scale(1.0 / emb_mul if emb_mul != 0 else 1.0)
+
     # ---- Tensor routing ----
     @classmethod
     def filter_tensors(cls, item: tuple[str, Callable[[], Tensor]]) -> tuple[str, Callable[[], Tensor]] | None:

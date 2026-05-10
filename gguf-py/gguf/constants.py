@@ -334,6 +334,7 @@ class Keys:
         G4V_VISION_FEATURE_SELECT     = "clip.vision.granite4.vision_feature_select"
         G4V_IMAGE_GRID_PINPOINTS      = "clip.vision.granite4.image_grid_pinpoints"
         G4V_USE_IMAGE_NEWLINE         = "clip.vision.granite4.use_image_newline"
+        G4V_BASE_STREAM_SCALE         = "clip.vision.granite4.base_stream_scale"
 
         class Attention:
             HEAD_COUNT      = "clip.vision.attention.head_count"

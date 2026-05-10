@@ -73,6 +73,7 @@
 #define KEY_G4V_VISION_FEATURE_SELECT    "clip.vision.granite4.vision_feature_select"
 #define KEY_G4V_IMAGE_GRID_PINPOINTS     "clip.vision.granite4.image_grid_pinpoints"
 #define KEY_G4V_USE_IMAGE_NEWLINE        "clip.vision.granite4.use_image_newline"
+#define KEY_G4V_BASE_STREAM_SCALE        "clip.vision.granite4.base_stream_scale"
 // audio-specific
 #define KEY_AUDIO_PROJ_TYPE     "clip.audio.projector_type" // for models with mixed modalities
 #define KEY_A_NUM_MEL_BINS      "clip.audio.num_mel_bins"
