@@ -207,8 +207,12 @@ struct llama_hparams {
     uint32_t indexer_head_size = 0;
     uint32_t indexer_top_k     = 0;
 
-    // qwen3vl deepstack
+    // qwen3vl deepstack; granite vision 4.1 uses an optional
+    // per-stream target-layer map (overrides the implicit
+    // identity mapping where stream k injects at decoder layer k).
     uint32_t n_deepstack_layers = 0;
+    std::array<uint32_t, LLAMA_MAX_LAYERS> deepstack_target_layers = {};
+    bool     deepstack_target_layers_set = false;
 
     // gemma4 per-layer embedding
     uint32_t n_embd_per_layer = 0;
@@ -263,6 +267,13 @@ struct llama_hparams {
 
     // dimension of main + auxiliary input embeddings
     uint32_t n_embd_inp() const;
+
+    // For architectures with an explicit deepstack target-layer map
+    // (granite vision 4.1), return the deepstack stream index (0..K-1)
+    // that targets decoder layer `il`, or -1 if no stream does.  When
+    // the map is unset, fall back to qwen3vl's implicit identity:
+    // stream i -> layer i for i < n_deepstack_layers.
+    int32_t deepstack_stream_for_layer(uint32_t il) const;
 
     // dimension of output embeddings
     uint32_t n_embd_out() const;

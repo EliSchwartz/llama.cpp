@@ -80,6 +80,21 @@ uint32_t llama_hparams::n_embd_inp() const {
     return n_embd_inp;
 }
 
+int32_t llama_hparams::deepstack_stream_for_layer(uint32_t il) const {
+    // Explicit map (granite vision 4.1): stream k targets layer
+    // deepstack_target_layers[k].  Otherwise fall back to qwen3vl's
+    // implicit identity mapping.
+    if (deepstack_target_layers_set) {
+        for (uint32_t k = 0; k < n_deepstack_layers; ++k) {
+            if (deepstack_target_layers[k] == il) {
+                return (int32_t) k;
+            }
+        }
+        return -1;
+    }
+    return (il < n_deepstack_layers) ? (int32_t) il : -1;
+}
+
 uint32_t llama_hparams::n_embd_out() const {
     return n_embd_out_impl > 0 ? n_embd_out_impl : n_embd;
 }

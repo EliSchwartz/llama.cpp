@@ -7,6 +7,22 @@ void llama_model_granite::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EMBEDDING_SCALE,             hparams.f_embedding_scale, false);
     ml.get_key(LLM_KV_ATTENTION_SCALE,             hparams.f_attention_scale, false);
 
+    // Granite Vision 4.1 deepstack: optional n_deepstack_layers +
+    // explicit per-stream target-layer map.
+    ml.get_key(LLM_KV_NUM_DEEPSTACK_LAYERS, hparams.n_deepstack_layers, false);
+    if (hparams.n_deepstack_layers > 0) {
+        std::vector<uint32_t> target_layers;
+        const bool ok = ml.get_arr(LLM_KV_DEEPSTACK_TARGET_LAYERS, target_layers, false);
+        if (ok) {
+            GGML_ASSERT(target_layers.size() == hparams.n_deepstack_layers
+                        && "deepstack_target_layers size must equal n_deepstack_layers");
+            for (size_t k = 0; k < target_layers.size(); ++k) {
+                hparams.deepstack_target_layers[k] = target_layers[k];
+            }
+            hparams.deepstack_target_layers_set = true;
+        }
+    }
+
     // Granite uses rope_finetuned as a switch for rope, so default to true
     bool rope_finetuned = true;
     ml.get_key(LLM_KV_ROPE_SCALING_FINETUNED, rope_finetuned, false);
@@ -112,6 +128,34 @@ llama_model_granite::graph::graph(
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
     for (int il = 0; il < n_layer; ++il) {
+        // Granite Vision 4.1 deepstack: inject the projector stream that
+        // targets decoder layer `il`, BEFORE the decoder layer runs.  This
+        // matches the reference forward in
+        // /ibm-granite/granite-vision-4.1/modeling.py: for each layer_idx,
+        // check the (llm_layer, packed_features) pairs and add to
+        // hidden_states[image_positions] if layer_idx == llm_layer.
+        //
+        // In the qwen3vl-deepstack layout the mmproj writes streams into
+        // res->t_inp_embd at offset (stream_index + 1) * n_embd (stream 0
+        // is the base and is already consumed via build_inp_embd).  For
+        // pure-text requests the input embedding carries zeros at those
+        // offsets (see build_inp_embd's zero-pad of the token branch), so
+        // the add is a no-op.
+        if (hparams.n_deepstack_layers > 0 && il > 0) {
+            // Note: il == 0 uses the stream at offset 0, which is already
+            // inpL (= base == stream at llm_layer 0 for granite vision 4.1).
+            const int32_t stream = hparams.deepstack_stream_for_layer((uint32_t) il);
+            if (stream >= 0) {
+                const int64_t n_embd_ = hparams.n_embd;
+                ggml_tensor * ds = ggml_view_2d(ctx0, res->t_inp_embd,
+                        n_embd_, n_tokens,
+                        res->t_inp_embd->nb[1],
+                        ((size_t) stream + 1) * (size_t) n_embd_ * sizeof(float));
+                inpL = ggml_add(ctx0, inpL, ds);
+                cb(inpL, "deepstack_in", il);
+            }
+        }
+
         ggml_tensor * inpSA = inpL;
 
         // norm

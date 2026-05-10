@@ -10908,6 +10908,25 @@ class GraniteModel(LlamaModel):
     """Conversion for IBM's GraniteForCausalLM"""
     model_arch = gguf.MODEL_ARCH.GRANITE
 
+    # Tensor prefixes that belong to the vision side of Granite Vision 4.1;
+    # when this text converter is invoked on a Granite4VisionForConditionalGeneration
+    # checkpoint (which exposes text_config.architectures = ["GraniteForCausalLM"]),
+    # those tensors are already handled by the mmproj converter and must be
+    # skipped here.
+    _GRANITE4V_SKIP_PREFIXES = (
+        "model.vision_tower.",
+        "model.layerwise_projectors.",
+        "model.spatial_projectors.",
+        "model.image_newline",
+    )
+
+    @classmethod
+    def filter_tensors(cls, item):
+        name, gen = item
+        if any(name.startswith(p) for p in cls._GRANITE4V_SKIP_PREFIXES):
+            return None
+        return super().filter_tensors(item)
+
     def set_gguf_parameters(self):
         """Granite uses standard llama parameters with the following differences:
 
@@ -10935,6 +10954,29 @@ class GraniteModel(LlamaModel):
         if logits_scale := self.hparams.get("logits_scaling"):
             self.gguf_writer.add_logit_scale(logits_scale)
             logger.info("gguf: (granite) logits_scale = %s", logits_scale)
+
+        # Granite Vision 4.1: write deepstack metadata from the outer
+        # config.  The mmproj emits (1 + K) * n_embd features per token;
+        # stream 0 is the base (consumed via build_inp_embd at decoder
+        # layer entry), streams 1..K target the layers listed in
+        # deepstack_target_layers, in order.
+        deepstack_layer_map = self.hparams.get("deepstack_layer_map")
+        if deepstack_layer_map:
+            spatial_target_layers = list(self.hparams.get("spatial_target_layers") or [])
+            # flat (llm_layer,) list, ordered base first then deepstack streams ascending
+            all_target_layers = sorted(
+                [int(p[1]) for p in deepstack_layer_map] + [int(x) for x in spatial_target_layers]
+            )
+            base_layer = all_target_layers[0]
+            ds_target_layers = all_target_layers[1:]
+            assert base_layer == 0, f"expected base stream at llm_layer 0, got {base_layer}"
+            n_deepstack = len(ds_target_layers)
+            self.gguf_writer.add_num_deepstack_layers(n_deepstack)
+            self.gguf_writer.add_deepstack_target_layers(ds_target_layers)
+            logger.info(
+                "gguf: (granite) deepstack n=%d, target_layers=%s",
+                n_deepstack, ds_target_layers,
+            )
 
 
 @ModelBase.register("GraniteMoeForCausalLM", "GraniteMoeSharedForCausalLM")
