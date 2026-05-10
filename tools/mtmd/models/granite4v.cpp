@@ -2,9 +2,11 @@
 #include "../clip-impl.h"
 #include "../clip-model.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <vector>
 
 /*
  * Granite Vision 4.1 clip graph — WORK IN PROGRESS.
@@ -372,16 +374,38 @@ ggml_cgraph * clip_graph_granite4v::build() {
         inpL = cur;
     }
 
-    // --- Stage 1c: all 8 WindowQFormer blocks. ---
+    // --- Stages 1c + 2a: all 8 WindowQFormer blocks, packed into the
+    //                     final mmproj output.
+    //
     // Each block pulls from its own SigLIP vision layer (stored as a
     // negative HF index in projector_vision_layers) and produces a
-    // (D_llm, query_side^2 * n^2) output stream.  The outputs are tagged
-    // g4v_blk<bid>_out via cbx; the harness diffs each against the
-    // corresponding downsampler_{interp,spatial}_<i>_out.npy fixture.
+    // (D_llm, query_side^2 * n^2) = (2560, 144) output stream.  All 8
+    // streams are then:
+    //   (1) sorted by projector_llm_layers[bid] ascending, so the stream
+    //       targeting the lowest decoder layer (= the "base" vision
+    //       feature in qwen3vl-deepstack parlance) lands at feature
+    //       offset 0, and successive streams at (k * n_embd).  Granite
+    //       Vision 4.1's HF forward zeroes image-position inputs_embeds
+    //       and adds each stream at its target layer, so the stream
+    //       with llm_layer=0 effectively IS the base.
+    //   (2) concatenated along the feature dim into a single tensor of
+    //       shape (8 * projection_dim, 144).
+    //   (3) appended with one image_newline token along the token dim
+    //       (HF pack_and_unpad_image_features single-tile branch); each
+    //       stream slice of the newline token equals the learned
+    //       image_newline vector.
+    //
+    // Final output shape: (8 * projection_dim, 144 + 1) = (20480, 145).
+    //
+    // Multi-tile (anyres) inputs will be handled at the mtmd layer by
+    // calling clip encoder once per tile and doing the pack_and_unpad
+    // assembly there; the single-tile path below matches HF
+    // pack_and_unpad's `else` branch exactly.
     const auto & g4v = model.g4v;
     const float qformer_eps = 1e-12f;  // Blip2QFormerConfig default
+    const int   projection_dim = hparams.projection_dim;
 
-    ggml_tensor * last_out = nullptr;
+    std::vector<ggml_tensor *> streams(g4v.projector_count, nullptr);
     for (int bid = 0; bid < g4v.projector_count; ++bid) {
         const auto & blk = g4v.blocks[bid];
 
@@ -390,7 +414,7 @@ ggml_cgraph * clip_graph_granite4v::build() {
         GGML_ASSERT(vlayer >= 1 && vlayer <= n_layer);
         ggml_tensor * h = layer_outs[vlayer - 1];
 
-        ggml_tensor * stream = g4v_build_block(
+        streams[bid] = g4v_build_block(
             this, ctx0, gf, blk,
             h, bid,
             g4v.projector_is_spatial[bid],
@@ -399,13 +423,47 @@ ggml_cgraph * clip_graph_granite4v::build() {
             /* window_side */ g4v.downsample_window_side,
             /* query_side  */ g4v.downsample_query_side,
             qformer_eps);
-        ggml_build_forward_expand(gf, stream);
-        last_out = stream;
     }
 
-    // Terminal node: the last block's output.  All streams are still
-    // scheduled via forward_expand above; clip.cpp's post-compute shape
-    // check looks at gf->nodes[-1], which is last_out's tag node.
-    GGML_ASSERT(last_out != nullptr);
+    // Sort block ids by projector_llm_layers ascending.
+    std::vector<int> order(g4v.projector_count);
+    for (int i = 0; i < g4v.projector_count; ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return g4v.projector_llm_layers[a] < g4v.projector_llm_layers[b];
+    });
+
+    // Concatenate streams along the feature dim (ne[0]).  Each stream has
+    // shape (projection_dim, 144).  Result: (K * projection_dim, 144).
+    ggml_tensor * mmproj = nullptr;
+    for (int k = 0; k < g4v.projector_count; ++k) {
+        ggml_tensor * s = streams[order[k]];
+        mmproj = (k == 0) ? s : ggml_concat(ctx0, mmproj, s, /*dim=*/0);
+    }
+    ggml_set_name(mmproj, "g4v_mmproj_packed");
+
+    // Append the learned image_newline vector as one extra token along the
+    // token dim (ne[1]).  image_newline has shape (projection_dim,) and is
+    // replicated across all K stream slices.
+    const int n_tokens_base = static_cast<int>(streams[0]->ne[1]);
+    const int n_streams     = g4v.projector_count;
+    ggml_tensor * newline_token;
+    {
+        // Tile image_newline K times along ne[0] to build one (K*D, 1)
+        // token, then concat along ne[1].  ggml_repeat expands the tensor
+        // to a target shape; we use an explicit new tensor of the target
+        // shape to drive it.
+        GGML_ASSERT(model.image_newline != nullptr);
+        ggml_tensor * newline = model.image_newline;         // (D,)
+        newline = ggml_reshape_2d(ctx0, newline, projection_dim, 1);  // (D, 1)
+        ggml_tensor * target = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32,
+                                                  n_streams * projection_dim, 1);
+        newline_token = ggml_repeat(ctx0, newline, target);  // (K*D, 1)
+    }
+    mmproj = ggml_concat(ctx0, mmproj, newline_token, /*dim=*/1);
+    ggml_set_name(mmproj, "g4v_mmproj_out");
+
+    (void) n_tokens_base;  // referenced only for readability above
+
+    ggml_build_forward_expand(gf, mmproj);
     return gf;
 }

@@ -182,6 +182,11 @@ int run(const std::string & mmproj, const std::string & fixtures_dir) {
         {"g4v_blk5_out",            "downsampler_spatial_1_out.npy"},
         {"g4v_blk6_out",            "downsampler_spatial_2_out.npy"},
         {"g4v_blk7_out",            "downsampler_spatial_3_out.npy"},
+        // Stage 2a: full mmproj output = 8 streams sorted by llm_layer
+        // ascending, concatenated along feature dim, with one appended
+        // image_newline token.  Shape (145, 8*2560) in PyTorch / memory,
+        // (8*2560, 145) in ggml ne order.
+        {"g4v_mmproj_out",          "mmproj_out_single_tile.npy"},
     };
     for (const auto & bc : block_checks) {
         h.wanted.emplace(bc.name, bc.fixture);

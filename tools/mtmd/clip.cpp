@@ -3239,14 +3239,19 @@ int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 * im
             } break;
         case PROJECTOR_TYPE_GRANITE4V:
             {
-                // DEV stage 1b: single projector block outputs query_side^2
-                // tokens per window, n^2 windows total.  For 384×384 input:
-                // n = 24/8 = 3, query_side = 4 → 4^2 * 3^2 = 144.
+                // Stage 2a single-tile: each projector block outputs
+                // query_side^2 tokens per window × n^2 windows, then
+                // pack_and_unpad appends one image_newline token.  For
+                // 384×384: n = 24/8 = 3, query_side = 4 → 4^2 * 3^2 + 1 = 145.
+                //
+                // Multi-tile (anyres) inputs take a different path at the
+                // mtmd layer: they call the encoder once per tile and then
+                // do LlavaNext-style pack/unpad on the assembled streams.
                 const int window_side = ctx->model.g4v.downsample_window_side;
                 const int query_side  = ctx->model.g4v.downsample_query_side;
                 const int side        = img->nx / params.patch_size;
                 const int n           = side / window_side;
-                n_patches             = (query_side * n) * (query_side * n);
+                n_patches             = (query_side * n) * (query_side * n) + 1;
             } break;
         default:
             GGML_ABORT("unsupported projector type");
@@ -4082,12 +4087,10 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_GLM4V:
             return ctx->model.mm_ffn_down_w->ne[1];
         case PROJECTOR_TYPE_GRANITE4V:
-            // DEV stage 1b: graph output is a single projector-block result
-            // of shape (D_llm=2560, query_side^2 * n^2 = 144).  Final value
-            // for the full mmproj will be projection_dim when stages 1c+
-            // concatenate streams along the feature dim (one base + 8
-            // streams = 9 × projection_dim).
-            return ctx->model.hparams.projection_dim;
+            // Stage 2a: graph output is 8 concatenated streams (deepstack
+            // layout with "base" = stream targeting llm_layer 0).  Per-token
+            // feature count = projector_count * projection_dim.
+            return ctx->model.g4v.projector_count * ctx->model.hparams.projection_dim;
         default:
             GGML_ABORT("Unknown projector type");
     }
