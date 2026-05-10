@@ -99,6 +99,13 @@ void clip_build_img_from_pixels(const unsigned char * rgb_pixels, int nx, int ny
 
 struct ggml_tensor * clip_get_newline_tensor(const struct clip_ctx * ctx);
 
+// Granite Vision 4.1 only: base-stream pre-scale (= 1/embedding_multiplier)
+// and projector block count.  These are needed by mtmd_encode when it does
+// pack_and_unpad at the mtmd layer.  Return 1.0f / 0 respectively on
+// projector types that don't populate g4v_meta.
+float clip_g4v_base_stream_scale(const struct clip_ctx * ctx);
+int   clip_g4v_projector_count  (const struct clip_ctx * ctx);
+
 bool clip_image_encode      (struct clip_ctx * ctx, int n_threads, struct clip_image_f32 * img, float * vec);
 bool clip_image_batch_encode(struct clip_ctx * ctx, int n_threads, const struct clip_image_f32_batch * imgs, float * vec);
 

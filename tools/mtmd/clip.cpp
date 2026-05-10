@@ -2960,6 +2960,14 @@ ggml_tensor * clip_get_newline_tensor(const struct clip_ctx * ctx) {
     return ctx->model.image_newline;
 }
 
+float clip_g4v_base_stream_scale(const struct clip_ctx * ctx) {
+    return ctx->model.g4v.base_stream_scale;
+}
+
+int clip_g4v_projector_count(const struct clip_ctx * ctx) {
+    return ctx->model.g4v.projector_count;
+}
+
 void clip_free(clip_ctx * ctx) {
     if (ctx == nullptr) {
         return;
@@ -3243,19 +3251,16 @@ int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 * im
             } break;
         case PROJECTOR_TYPE_GRANITE4V:
             {
-                // Stage 2a single-tile: each projector block outputs
-                // query_side^2 tokens per window × n^2 windows, then
-                // pack_and_unpad appends one image_newline token.  For
-                // 384×384: n = 24/8 = 3, query_side = 4 → 4^2 * 3^2 + 1 = 145.
-                //
-                // Multi-tile (anyres) inputs take a different path at the
-                // mtmd layer: they call the encoder once per tile and then
-                // do LlavaNext-style pack/unpad on the assembled streams.
+                // Per-tile output token count: each projector block outputs
+                // query_side^2 tokens per window × n^2 windows.
+                // For 384×384 input: n = 24/8 = 3, query_side = 4 → 144.
+                // The +1 image_newline row / newline column logic runs in
+                // mtmd_encode's pack_and_unpad path, not here.
                 const int window_side = ctx->model.g4v.downsample_window_side;
                 const int query_side  = ctx->model.g4v.downsample_query_side;
                 const int side        = img->nx / params.patch_size;
                 const int n           = side / window_side;
-                n_patches             = (query_side * n) * (query_side * n) + 1;
+                n_patches             = (query_side * n) * (query_side * n);
             } break;
         default:
             GGML_ABORT("unsupported projector type");

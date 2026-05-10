@@ -451,32 +451,10 @@ ggml_cgraph * clip_graph_granite4v::build() {
     }
     ggml_set_name(mmproj, "g4v_mmproj_packed");
 
-    // Append the learned image_newline vector as one extra token along the
-    // token dim (ne[1]).  image_newline has shape (projection_dim,) and is
-    // replicated across all K stream slices.
-    //
-    // The base slice (offset 0 in the packed layout) receives the same
-    // pre-scale compensation as the base stream itself, so after the LLM
-    // graph multiplies by f_embedding_scale the image_newline row of the
-    // base slice is restored to its learned value.  The remaining K-1
-    // deepstack slices are consumed unscaled so they carry the full
-    // image_newline value in the output.
-    ggml_tensor * newline_token;
-    {
-        GGML_ASSERT(model.image_newline != nullptr);
-        ggml_tensor * newline = ggml_reshape_2d(ctx0, model.image_newline, projection_dim, 1); // (D, 1)
-        ggml_tensor * newline_scaled = (g4v.base_stream_scale != 1.0f)
-            ? ggml_scale(ctx0, newline, g4v.base_stream_scale)
-            : newline;
-
-        // Stack K copies along ne[0].  Build the base slice first (scaled),
-        // then concat K-1 unscaled copies.
-        newline_token = newline_scaled;
-        for (int k = 1; k < g4v.projector_count; ++k) {
-            newline_token = ggml_concat(ctx0, newline_token, newline, /*dim=*/0);
-        }
-    }
-    mmproj = ggml_concat(ctx0, mmproj, newline_token, /*dim=*/1);
+    // NOTE: The image_newline row (single-tile) or newline column (multi-
+    // tile grid) is inserted at the mtmd layer in pack_and_unpad, not here.
+    // The graph emits the raw (K * projection_dim, 144) per-tile features
+    // so mtmd can drive both single- and multi-tile anyres paths uniformly.
     ggml_set_name(mmproj, "g4v_mmproj_out");
 
     ggml_build_forward_expand(gf, mmproj);
